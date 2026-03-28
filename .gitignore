@@ -1,0 +1,57 @@
+# ======================
+# 🔐 ENV FILES (CRITICAL)
+# ======================
+.env
+.env.*
+*.env
+
+# ======================
+# 🐍 PYTHON (BACKEND)
+# ======================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+venv/
+.env.local
+
+# Alembic cache
+alembic/versions/__pycache__/
+
+# ======================
+# ⚛️ NODE / REACT (FRONTEND)
+# ======================
+node_modules/
+dist/
+build/
+
+# ======================
+# 🐳 DOCKER
+# ======================
+docker-data/
+postgres-data/
+*.log
+
+# ======================
+# 🧠 IDE / EDITOR
+# ======================
+.vscode/
+.idea/
+
+# ======================
+# 🍎 OS FILES
+# ======================
+.DS_Store
+
+# ======================
+# 🧪 TESTING
+# ======================
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ======================
+# 📦 MISC
+# ======================
+uploads/*
