@@ -55,3 +55,6 @@ htmlcov/
 # 📦 MISC
 # ======================
 uploads/*
+
+# Test database
+*.db
