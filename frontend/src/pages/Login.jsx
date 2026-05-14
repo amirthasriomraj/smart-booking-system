@@ -2,7 +2,7 @@ import React from "react"
 import { useState, useContext } from "react"
 import { useNavigate } from "react-router-dom"
 import api from "../api/api"
-import { AuthContext } from "../auth/AuthContext"
+import { AuthContext } from "../auth/AuthContextOnly"
 
 export default function Login() {
 
@@ -34,7 +34,7 @@ export default function Login() {
 
       navigate("/dashboard")
 
-    } catch (err) {
+    } catch {
 
       setError("Invalid username or password")
 

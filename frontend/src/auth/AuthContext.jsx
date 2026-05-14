@@ -1,44 +1,41 @@
-import React, { createContext, useState, useEffect } from "react"
+import { useState, useEffect } from "react"
 import api from "../api/api"
-
-export const AuthContext = createContext()
+import { AuthContext } from "./AuthContextOnly"
 
 function getCookie(name) {
   const value = `; ${document.cookie}`
   const parts = value.split(`; ${name}=`)
+
   if (parts.length === 2) {
     return parts.pop().split(";").shift()
   }
+
   return null
 }
 
 export function AuthProvider({ children }) {
+  const publicRoutes = ["/login", "/register", "/reset-password"]
+  const currentPath = window.location.pathname
+
+  const shouldSkipAuth = publicRoutes.includes(currentPath)
 
   const [user, setUser] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!shouldSkipAuth)
 
   useEffect(() => {
-
-    const publicRoutes = ["/login", "/register", "/reset-password"]
-    const currentPath = window.location.pathname
-
-    if (publicRoutes.includes(currentPath)) {
-      setLoading(false)
+    if (shouldSkipAuth) {
       return
     }
 
     const restoreSession = async () => {
-
       const csrfToken = getCookie("csrf_token")
 
-      // 🔥 CRITICAL FIX: Skip refresh if no CSRF cookie
       if (!csrfToken) {
         setLoading(false)
         return
       }
 
       try {
-
         const response = await api.post(
           "/auth/refresh",
           {},
@@ -59,25 +56,24 @@ export function AuthProvider({ children }) {
           role: "user"
         })
 
-      } catch (error) {
-
+      } catch {
         localStorage.removeItem("access_token")
         setUser(null)
 
+      } finally {
+        setLoading(false)
       }
-
-      setLoading(false)
     }
 
     restoreSession()
-
-  }, [])
+  }, [shouldSkipAuth])
 
   const logout = async () => {
-
     try {
       await api.post("/auth/logout")
-    } catch (err) {}
+    } catch {
+      console.warn("Logout request failed")
+    }
 
     localStorage.removeItem("access_token")
     setUser(null)

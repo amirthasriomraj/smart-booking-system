@@ -1,4 +1,3 @@
-import React from "react"
 import { useState } from "react"
 import { useSearchParams, useNavigate } from "react-router-dom"
 import api from "../api/api"
@@ -30,7 +29,7 @@ export default function ResetPassword() {
         navigate("/login")
       }, 2000)
 
-    } catch (err) {
+    } catch {
 
       setError("Invalid or expired token")
 
