@@ -2,6 +2,7 @@ from sqlalchemy import (
     Column,
     Integer,
     String,
+    Text,
     Date,
     Time,
     ForeignKey,
@@ -103,3 +104,129 @@ class RefreshToken(Base):
     user = relationship("User", back_populates="refresh_tokens")
 
     replaced_by = relationship("RefreshToken", remote_side=[id])
+
+
+# -------------------------
+# TENANT FOUNDATION (Milestone 1)
+# Frozen RBAC / registration model — TAS Part 3 §2, §3, §5, §10
+# -------------------------
+
+class Role(Base):
+    """Master table of platform roles (TAS Part 3 §2)."""
+    __tablename__ = "roles"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    code = Column(String, unique=True, nullable=False, index=True)  # e.g. PLATFORM_ADMIN
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+
+
+class UserRole(Base):
+    """Platform-scoped role assignment (e.g. Platform Administrator, Customer)."""
+    __tablename__ = "user_roles"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    role_id = Column(Integer, ForeignKey("roles.id"), nullable=False, index=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class Country(Base):
+    """Master table of countries (TAS Part 3 §3)."""
+    __tablename__ = "countries"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    iso_code = Column(String, unique=True, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    currency_code = Column(String, nullable=True)
+    timezone = Column(String, nullable=True)
+
+
+class BusinessCategory(Base):
+    """Master table of business categories (PRD §12 Step 1)."""
+    __tablename__ = "business_categories"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    name = Column(String, unique=True, nullable=False)
+    description = Column(String, nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+
+
+class Business(Base):
+    """
+    Represents a tenant (TAS Part 3 §3).
+
+    Status values follow the frozen lifecycle (PRD §13 / TAS §3):
+    Pending -> Active -> Suspended, or Pending -> Rejected.
+    """
+    __tablename__ = "businesses"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    business_name = Column(String, nullable=False, index=True)
+    business_category_id = Column(Integer, ForeignKey("business_categories.id"), nullable=False)
+    owner_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)  # BR-006
+    country_id = Column(Integer, ForeignKey("countries.id"), nullable=False)
+
+    status = Column(String, nullable=False, default="Pending", index=True)
+
+    approved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class BusinessMember(Base):
+    """
+    Business-scoped role assignment (TAS Part 3 §5).
+
+    Used for Business Owner / Branch Manager / HR User. The Business Owner's
+    membership row is created at registration time, alongside the Pending
+    business record — approval activates the business, it does not create
+    the ownership relationship.
+    """
+    __tablename__ = "business_members"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    business_id = Column(Integer, ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    role_id = Column(Integer, ForeignKey("roles.id"), nullable=False)
+
+    status = Column(String, nullable=False, default="Active")
+
+    joined_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    left_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("business_id", "user_id", name="uq_business_member_business_user"),
+    )
+
+
+class AuditLog(Base):
+    """
+    Immutable, append-only audit trail (TAS Part 3 §10 / PRD §30).
+    No update or delete path is exposed anywhere in the application.
+    """
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    business_id = Column(Integer, ForeignKey("businesses.id"), nullable=True, index=True)
+    entity_type = Column(String, nullable=False, index=True)
+    entity_id = Column(Integer, nullable=False)
+    action = Column(String, nullable=False, index=True)
+
+    previous_value = Column(Text, nullable=True)
+    new_value = Column(Text, nullable=True)
+
+    performed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    reason = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)

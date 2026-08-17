@@ -1,7 +1,7 @@
 import time
 import logging
 from database import Base, engine
-from routers import bookings, auth, profiles, users
+from routers import bookings, auth, profiles, users, businesses
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -136,6 +136,7 @@ app.include_router(auth.router, prefix="/api/v1")
 app.include_router(bookings.router, prefix="/api/v1")
 app.include_router(profiles.router, prefix="/api/v1")
 app.include_router(users.router, prefix="/api/v1")
+app.include_router(businesses.router, prefix="/api/v1")
 
 @app.get("/")
 def health_check():
