@@ -7,7 +7,7 @@ import { AuthContext } from "../auth/AuthContextOnly"
 export default function Login() {
 
   const navigate = useNavigate()
-  const { setUser } = useContext(AuthContext)
+  const { fetchUserContext } = useContext(AuthContext)
 
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
@@ -29,8 +29,8 @@ export default function Login() {
 
       localStorage.setItem("access_token", accessToken)
 
-      // 🔑 Update auth state
-      setUser({ authenticated: true })
+      // Fetch real role/business context before navigating
+      await fetchUserContext()
 
       navigate("/dashboard")
 

@@ -159,3 +159,135 @@ def test_admin_can_access_admin_route():
     )
 
     assert response.status_code == 200
+
+
+# -----------------------------
+# /auth/me context (Milestone 2 — drives frontend role-gating)
+# -----------------------------
+
+def _seed_me_reference_data():
+    from database import SessionLocal
+    from models import Role, BusinessCategory, Country
+
+    db = SessionLocal()
+    try:
+        for code, name in [("PLATFORM_ADMIN", "Platform Administrator"), ("BUSINESS_OWNER", "Business Owner")]:
+            if not db.query(Role).filter(Role.code == code).first():
+                db.add(Role(code=code, name=name))
+        db.commit()
+
+        if not db.query(BusinessCategory).filter(BusinessCategory.name == "Salon").first():
+            db.add(BusinessCategory(name="Salon", is_active=True))
+        db.commit()
+
+        if not db.query(Country).filter(Country.iso_code == "IN").first():
+            db.add(Country(iso_code="IN", name="India", currency_code="INR", timezone="Asia/Kolkata"))
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_me_returns_plain_user_context():
+    client.post(
+        "/api/v1/auth/register",
+        json={
+            "username": "plainmeuser",
+            "email": "plainme@example.com",
+            "password": "Testpass123"
+        }
+    )
+    login_response = client.post(
+        "/api/v1/auth/login",
+        data={"username": "plainmeuser", "password": "Testpass123"}
+    )
+    access_token = login_response.json()["access_token"]
+
+    response = client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {access_token}"}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["username"] == "plainmeuser"
+    assert data["is_platform_admin"] is False
+    assert data["business"] is None
+
+
+def test_me_returns_platform_admin_context():
+    _seed_me_reference_data()
+
+    client.post(
+        "/api/v1/auth/register",
+        json={
+            "username": "meadmin",
+            "email": "meadmin@example.com",
+            "password": "Testpass123"
+        }
+    )
+
+    from database import SessionLocal
+    from models import User, Role, UserRole
+
+    db = SessionLocal()
+    user = db.query(User).filter(User.username == "meadmin").first()
+    role = db.query(Role).filter(Role.code == "PLATFORM_ADMIN").first()
+    db.add(UserRole(user_id=user.id, role_id=role.id))
+    db.commit()
+    db.close()
+
+    login_response = client.post(
+        "/api/v1/auth/login",
+        data={"username": "meadmin", "password": "Testpass123"}
+    )
+    access_token = login_response.json()["access_token"]
+
+    response = client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {access_token}"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["is_platform_admin"] is True
+
+
+def test_me_returns_business_owner_context():
+    _seed_me_reference_data()
+
+    from database import SessionLocal
+    from models import BusinessCategory, Country
+
+    db = SessionLocal()
+    category_id = db.query(BusinessCategory).filter(BusinessCategory.name == "Salon").first().id
+    country_id = db.query(Country).filter(Country.iso_code == "IN").first().id
+    db.close()
+
+    client.post(
+        "/api/v1/businesses/register",
+        json={
+            "username": "meowner",
+            "email": "meowner@example.com",
+            "password": "Testpass123",
+            "business_name": "Me Owner Business",
+            "business_category_id": category_id,
+            "country_id": country_id,
+        }
+    )
+
+    login_response = client.post(
+        "/api/v1/auth/login",
+        data={"username": "meowner", "password": "Testpass123"}
+    )
+    access_token = login_response.json()["access_token"]
+
+    response = client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {access_token}"}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["is_platform_admin"] is False
+    assert data["business"] is not None
+    assert data["business"]["role_code"] == "BUSINESS_OWNER"
+    assert data["business"]["status"] == "Pending"

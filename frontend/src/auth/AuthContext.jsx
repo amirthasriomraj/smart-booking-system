@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react"
-import api from "../api/api"
+import { useState, useEffect, useCallback } from "react"
+import api, { getMe } from "../api/api"
 import { AuthContext } from "./AuthContextOnly"
 
 function getCookie(name) {
@@ -21,6 +21,20 @@ export function AuthProvider({ children }) {
 
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(!shouldSkipAuth)
+
+  // Fetches the real role/business context from the backend (GET /auth/me)
+  // instead of assuming a role. Used on session restore and right after login.
+  const fetchUserContext = useCallback(async () => {
+    try {
+      const response = await getMe()
+      const context = { authenticated: true, ...response.data }
+      setUser(context)
+      return context
+    } catch {
+      setUser(null)
+      return null
+    }
+  }, [])
 
   useEffect(() => {
     if (shouldSkipAuth) {
@@ -51,10 +65,7 @@ export function AuthProvider({ children }) {
 
         localStorage.setItem("access_token", newAccessToken)
 
-        setUser({
-          authenticated: true,
-          role: "user"
-        })
+        await fetchUserContext()
 
       } catch {
         localStorage.removeItem("access_token")
@@ -66,7 +77,7 @@ export function AuthProvider({ children }) {
     }
 
     restoreSession()
-  }, [shouldSkipAuth])
+  }, [shouldSkipAuth, fetchUserContext])
 
   const logout = async () => {
     try {
@@ -80,7 +91,7 @@ export function AuthProvider({ children }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, setUser, logout, loading }}>
+    <AuthContext.Provider value={{ user, setUser, logout, loading, fetchUserContext }}>
       {children}
     </AuthContext.Provider>
   )

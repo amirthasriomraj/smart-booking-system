@@ -5,11 +5,19 @@ from fastapi.security import OAuth2PasswordRequestForm
 from datetime import datetime, timedelta
 
 from database import SessionLocal
-from schemas import UserCreate, UserResponse, Token, ForgotPasswordRequest, ResetPasswordRequest
-from dependencies import get_current_user
+from schemas import (
+    UserCreate,
+    UserResponse,
+    Token,
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
+    UserContextResponse,
+    BusinessContext,
+)
+from dependencies import get_current_user, user_has_role
 import crud
 from auth import create_access_token, generate_csrf_token
-from models import RefreshToken
+from models import RefreshToken, BusinessMember, Business, Role
 from services.email_service import send_password_reset_email
 from services.rate_limiter import rate_limit
 
@@ -224,3 +232,41 @@ def logout_all(
     db: Session = Depends(get_db)
 ):
     return crud.revoke_all_refresh_tokens(db, current_user.id)
+
+
+# -----------------------------
+# Current user context (Milestone 2 — drives frontend role-gating)
+# -----------------------------
+
+@router.get("/me", response_model=UserContextResponse)
+def get_current_user_context(
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    is_platform_admin = user_has_role(db, current_user.id, "PLATFORM_ADMIN")
+
+    membership = (
+        db.query(BusinessMember, Business, Role)
+        .join(Business, BusinessMember.business_id == Business.id)
+        .join(Role, BusinessMember.role_id == Role.id)
+        .filter(BusinessMember.user_id == current_user.id, BusinessMember.status == "Active")
+        .first()
+    )
+
+    business_context = None
+    if membership:
+        _, business, role = membership
+        business_context = BusinessContext(
+            id=business.id,
+            business_name=business.business_name,
+            status=business.status,
+            role_code=role.code,
+        )
+
+    return UserContextResponse(
+        user_id=current_user.id,
+        username=current_user.username,
+        email=current_user.email,
+        is_platform_admin=is_platform_admin,
+        business=business_context,
+    )

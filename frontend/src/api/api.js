@@ -111,4 +111,70 @@ export const deleteBooking = (bookingId) => {
   return api.delete(`/bookings/${bookingId}`)
 }
 
+/*
+Current user context (Milestone 2)
+*/
+
+export const getMe = () => api.get("/auth/me")
+
+/*
+Business helpers (Platform Admin)
+*/
+
+export const listBusinesses = (status) => {
+  return api.get("/businesses", { params: status ? { status } : {} })
+}
+
+export const approveBusiness = (businessId) => {
+  return api.post(`/businesses/${businessId}/approve`)
+}
+
+export const rejectBusiness = (businessId, reason) => {
+  return api.post(`/businesses/${businessId}/reject`, { reason })
+}
+
+export const listCountries = () => api.get("/businesses/countries")
+
+/*
+Branch helpers (Business Owner)
+*/
+
+export const listBranchesForBusiness = (businessId) => {
+  return api.get(`/businesses/${businessId}/branches`)
+}
+
+export const createBranch = (businessId, data) => {
+  return api.post(`/businesses/${businessId}/branches`, data)
+}
+
+export const getBranch = (branchId) => api.get(`/branches/${branchId}`)
+
+export const updateBranch = (branchId, data) => {
+  return api.patch(`/branches/${branchId}`, data)
+}
+
+export const activateBranch = (branchId) => api.post(`/branches/${branchId}/activate`)
+
+export const deactivateBranch = (branchId) => api.post(`/branches/${branchId}/deactivate`)
+
+export const getWorkingHours = (branchId) => api.get(`/branches/${branchId}/working-hours`)
+
+export const upsertWorkingHours = (branchId, hours) => {
+  return api.put(`/branches/${branchId}/working-hours`, { hours })
+}
+
+/*
+Branch helpers (Platform Admin)
+*/
+
+export const listBranches = (approvalStatus) => {
+  return api.get("/branches", { params: approvalStatus ? { approval_status: approvalStatus } : {} })
+}
+
+export const approveBranch = (branchId) => api.post(`/branches/${branchId}/approve`)
+
+export const rejectBranch = (branchId, reason) => {
+  return api.post(`/branches/${branchId}/reject`, { reason })
+}
+
 export default api
