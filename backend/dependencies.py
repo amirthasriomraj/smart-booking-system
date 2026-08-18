@@ -50,6 +50,17 @@ def get_current_admin(current_user: User = Depends(get_current_user)):
     return current_user
 
 
+def user_has_role(db: Session, user_id: int, role_code: str) -> bool:
+    """Platform-scoped role check (TAS Part 3 §2), backed by user_roles."""
+    return (
+        db.query(UserRole)
+        .join(Role, UserRole.role_id == Role.id)
+        .filter(UserRole.user_id == user_id, Role.code == role_code)
+        .first()
+        is not None
+    )
+
+
 def get_current_platform_admin(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -59,14 +70,7 @@ def get_current_platform_admin(
     platform-scoped role, assigned via user_roles, not the legacy
     User.role string.
     """
-    has_role = (
-        db.query(UserRole)
-        .join(Role, UserRole.role_id == Role.id)
-        .filter(UserRole.user_id == current_user.id, Role.code == "PLATFORM_ADMIN")
-        .first()
-    )
-
-    if not has_role:
+    if not user_has_role(db, current_user.id, "PLATFORM_ADMIN"):
         raise HTTPException(
             status_code=403,
             detail="Platform Administrator privileges required"

@@ -2,7 +2,7 @@ import { useContext } from "react"
 import { Navigate, Outlet } from "react-router-dom"
 import { AuthContext } from "../auth/AuthContextOnly"
 
-export default function ProtectedRoute({ adminOnly=false }) {
+export default function ProtectedRoute({ adminOnly=false, businessOwnerOnly=false }) {
 
     const { user, loading } = useContext(AuthContext)
 
@@ -15,7 +15,14 @@ export default function ProtectedRoute({ adminOnly=false }) {
         return <Navigate to="/login" />
     }
 
-    if (adminOnly && user.role !== "admin") {
+    if (adminOnly && !user.is_platform_admin) {
+        return <Navigate to="/dashboard" />
+    }
+
+    if (
+        businessOwnerOnly &&
+        !(user.business?.role_code === "BUSINESS_OWNER" && user.business?.status === "Active")
+    ) {
         return <Navigate to="/dashboard" />
     }
 

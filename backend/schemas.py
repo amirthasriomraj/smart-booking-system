@@ -27,6 +27,27 @@ class UserResponse(BaseModel):
 
 
 # -------------------------
+# CURRENT USER CONTEXT (Milestone 2 — drives frontend role-gating)
+# -------------------------
+
+class BusinessContext(BaseModel):
+    id: int
+    business_name: str
+    status: str
+    role_code: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserContextResponse(BaseModel):
+    user_id: int
+    username: str
+    email: EmailStr
+    is_platform_admin: bool
+    business: Optional[BusinessContext] = None
+
+
+# -------------------------
 # PROFILE SCHEMAS
 # -------------------------
 

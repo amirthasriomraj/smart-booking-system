@@ -9,7 +9,8 @@ from sqlalchemy import (
     UniqueConstraint,
     Boolean,
     DateTime,
-    Index
+    Index,
+    text,
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -230,3 +231,89 @@ class AuditLog(Base):
     reason = Column(Text, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+# -------------------------
+# BRANCH (Milestone 2)
+# Frozen Branch model — TAS Part 3 §4, §5; PRD §12 Step 5, §13
+# -------------------------
+
+class Branch(Base):
+    """
+    Represents a branch of a Business (TAS Part 3 §4).
+
+    Status is split into two independent fields (an approved deviation
+    from the TAS's single `status` column, see Milestone 2 plan):
+    - approval_status: Platform-Admin-controlled (Pending -> Approved/Rejected).
+    - is_active: Business-Owner-controlled, only togglable once Approved.
+      Deactivating a branch does not erase the fact that it was approved.
+    """
+    __tablename__ = "branches"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    business_id = Column(Integer, ForeignKey("businesses.id"), nullable=False, index=True)
+
+    branch_name = Column(String, nullable=False)
+    address = Column(String, nullable=True)
+    city = Column(String, nullable=True, index=True)
+    state = Column(String, nullable=True)
+    postal_code = Column(String, nullable=True)
+    country_id = Column(Integer, ForeignKey("countries.id"), nullable=False)
+    phone = Column(String, nullable=True)
+    email = Column(String, nullable=True)
+
+    approval_status = Column(String, nullable=False, default="Pending", index=True)
+    is_active = Column(Boolean, nullable=False, default=False)
+
+    approved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class BranchWorkingHours(Base):
+    """Per-weekday operating hours for a branch (TAS Part 3 §4)."""
+    __tablename__ = "branch_working_hours"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    branch_id = Column(Integer, ForeignKey("branches.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    weekday = Column(Integer, nullable=False)  # 0=Monday .. 6=Sunday
+    opening_time = Column(Time, nullable=True)
+    closing_time = Column(Time, nullable=True)
+    is_closed = Column(Boolean, nullable=False, default=False)
+
+    __table_args__ = (
+        UniqueConstraint("branch_id", "weekday", name="uq_branch_working_hours_branch_weekday"),
+    )
+
+
+class BranchAssignment(Base):
+    """
+    Tracks Branch Manager (and future branch-linked Resource User) transfers
+    without losing history (TAS Part 3 §5). No endpoint writes to this table
+    yet — it lands with the Employee/Staff Invitation milestone. HR Users are
+    business-scoped in V1 and never get a row here (Milestone 2 deviation).
+    """
+    __tablename__ = "branch_assignments"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    business_member_id = Column(Integer, ForeignKey("business_members.id", ondelete="CASCADE"), nullable=False, index=True)
+    branch_id = Column(Integer, ForeignKey("branches.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    assigned_from = Column(DateTime, default=datetime.utcnow, nullable=False)
+    assigned_to = Column(DateTime, nullable=True)
+    is_current = Column(Boolean, nullable=False, default=True)
+
+    __table_args__ = (
+        Index(
+            "uq_branch_assignments_one_current",
+            "business_member_id",
+            unique=True,
+            postgresql_where=text("is_current = true"),
+        ),
+    )

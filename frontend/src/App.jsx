@@ -6,6 +6,7 @@ import Register from "./pages/Register"
 import Dashboard from "./pages/Dashboard"
 import Profile from "./pages/Profile"
 import Admin from "./pages/Admin"
+import BranchManagement from "./pages/BranchManagement"
 import ResetPassword from "./pages/ResetPassword"
 
 import ProtectedRoute from "./components/ProtectedRoute"
@@ -33,6 +34,11 @@ function App() {
         {/* Admin routes */}
         <Route element={<ProtectedRoute adminOnly={true} />}>
           <Route path="/admin" element={<Admin />} />
+        </Route>
+
+        {/* Business Owner routes */}
+        <Route element={<ProtectedRoute businessOwnerOnly={true} />}>
+          <Route path="/business/branches" element={<BranchManagement />} />
         </Route>
 
       </Routes>
