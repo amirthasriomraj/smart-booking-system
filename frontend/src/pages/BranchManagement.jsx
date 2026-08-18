@@ -1,4 +1,4 @@
-import React, { useContext, useEffect, useState } from "react"
+import React, { useContext, useEffect, useState, useCallback } from "react"
 import { AuthContext } from "../auth/AuthContextOnly"
 import {
   listBranchesForBusiness,
@@ -35,14 +35,11 @@ export default function BranchManagement() {
   const [selectedBranchId, setSelectedBranchId] = useState(null)
   const [workingHours, setWorkingHours] = useState({})
 
-  const loadBranches = async () => {
-    try {
-      const response = await listBranchesForBusiness(businessId)
-      setBranches(response.data)
-    } catch {
-      setError("Failed to load branches")
-    }
-  }
+  const loadBranches = useCallback(() => {
+    listBranchesForBusiness(businessId)
+      .then((response) => setBranches(response.data))
+      .catch(() => setError("Failed to load branches"))
+  }, [businessId])
 
   useEffect(() => {
     if (!businessId) {
@@ -50,7 +47,7 @@ export default function BranchManagement() {
     }
     loadBranches()
     listCountries().then((response) => setCountries(response.data)).catch(() => {})
-  }, [businessId])
+  }, [businessId, loadBranches])
 
   const handleCreate = async (e) => {
     e.preventDefault()

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react"
+import React, { useCallback, useEffect, useState } from "react"
 import {
   listBusinesses,
   approveBusiness,
@@ -13,28 +13,22 @@ export default function Admin() {
   const [branches, setBranches] = useState([])
   const [error, setError] = useState("")
 
-  const loadBusinesses = async () => {
-    try {
-      const response = await listBusinesses("Pending")
-      setBusinesses(response.data)
-    } catch {
-      setError("Failed to load pending businesses")
-    }
-  }
+  const loadBusinesses = useCallback(() => {
+    listBusinesses("Pending")
+      .then((response) => setBusinesses(response.data))
+      .catch(() => setError("Failed to load pending businesses"))
+  }, [])
 
-  const loadBranches = async () => {
-    try {
-      const response = await listBranches("Pending")
-      setBranches(response.data)
-    } catch {
-      setError("Failed to load pending branches")
-    }
-  }
+  const loadBranches = useCallback(() => {
+    listBranches("Pending")
+      .then((response) => setBranches(response.data))
+      .catch(() => setError("Failed to load pending branches"))
+  }, [])
 
   useEffect(() => {
     loadBusinesses()
     loadBranches()
-  }, [])
+  }, [loadBusinesses, loadBranches])
 
   const handleApproveBusiness = async (id) => {
     await approveBusiness(id)
