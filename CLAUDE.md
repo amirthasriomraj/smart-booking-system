@@ -7,10 +7,12 @@ Persistent working instructions for Claude Code in this repository. This file do
 - `docs/PRODUCT_REQUIREMENTS_DOCUMENT.md` — frozen Version 1 PRD.
 - `docs/TECHNICAL_ARCHITECTURE_SPECIFICATION.md` — frozen Version 1 TAS.
 - `docs/IMPLEMENTATION_DECISIONS.md` — approved implementation-time clarifications and decisions made where the frozen PRD/TAS was ambiguous or required explicit resolution.
+- `docs/IMPLEMENTATION_PLAN.md` — approved V1 implementation milestone scope and sequencing.
 
-When an implementation decision in `IMPLEMENTATION_DECISIONS.md` clarifies an ambiguity in the frozen PRD/TAS, follow that recorded decision. Do not add, remove, or change implementation decisions without explicit user approval.
-
-The PRD and TAS are **frozen**. Read them for actual requirements/design instead of relying on memory or this file. Do not modify either frozen document unless explicitly requested by the user. Do not copy their detailed contents into this file or let it drift out of sync with them — this file is process guidance only.
+The PRD and TAS are frozen and remain the primary source of V1 requirements and architecture.
+`IMPLEMENTATION_DECISIONS.md` records explicitly approved post-freeze clarifications where implementation required a decision.
+`IMPLEMENTATION_PLAN.md` records the approved implementation sequence and milestone boundaries.
+Do not add, remove, change, defer, or move implementation decisions or milestone scope without explicit user approval.
 
 ## Project Nature
 
