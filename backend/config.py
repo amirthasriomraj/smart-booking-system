@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     # CORS
     ALLOWED_ORIGINS: List[str] = ["http://localhost:3000"]
 
+    # Frontend (used to build links in outgoing emails — password reset,
+    # staff invitations. Must be the app's actual origin, i.e. wherever
+    # nginx proxies /api to this backend — never the Vite dev server port.)
+    FRONTEND_BASE_URL: str = "http://localhost"
+
     # SMTP - Email
     SMTP_HOST: str
     SMTP_PORT: int

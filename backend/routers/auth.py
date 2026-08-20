@@ -14,10 +14,12 @@ from schemas import (
     UserContextResponse,
     BusinessContext,
 )
-from dependencies import get_current_user, user_has_role
+from schemas_staff import AcceptInvitationStatusResponse, AcceptInvitationRequest
 import crud
+import crud_staff
 from auth import create_access_token, generate_csrf_token
-from models import RefreshToken, BusinessMember, Business, Role
+from dependencies import get_current_user, user_has_role
+from models import RefreshToken, BusinessMember, Business, Role, BranchAssignment, Branch
 from services.email_service import send_password_reset_email
 from services.rate_limiter import rate_limit
 
@@ -255,12 +257,29 @@ def get_current_user_context(
 
     business_context = None
     if membership:
-        _, business, role = membership
+        member, business, role = membership
+
+        branch_id = None
+        branch_name = None
+        if role.code == "BRANCH_MANAGER":
+            assignment = (
+                db.query(BranchAssignment, Branch)
+                .join(Branch, BranchAssignment.branch_id == Branch.id)
+                .filter(BranchAssignment.business_member_id == member.id, BranchAssignment.is_current == True)  # noqa: E712
+                .first()
+            )
+            if assignment:
+                _, branch = assignment
+                branch_id = branch.id
+                branch_name = branch.branch_name
+
         business_context = BusinessContext(
             id=business.id,
             business_name=business.business_name,
             status=business.status,
             role_code=role.code,
+            branch_id=branch_id,
+            branch_name=branch_name,
         )
 
     return UserContextResponse(
@@ -270,3 +289,25 @@ def get_current_user_context(
         is_platform_admin=is_platform_admin,
         business=business_context,
     )
+
+
+# -----------------------------
+# Staff invitation acceptance (Milestone 3) — public, token-authenticated
+# -----------------------------
+
+@router.get("/accept-invitation", response_model=AcceptInvitationStatusResponse)
+def get_invitation_status(token: str, db: Session = Depends(get_db)):
+    member, business, role, branch = crud_staff.get_invitation_status(db, token)
+    return AcceptInvitationStatusResponse(
+        requires_credential_setup=member.requires_credential_setup,
+        business_name=business.business_name,
+        role_code=role.code,
+        branch_id=branch.id if branch else None,
+        branch_name=branch.branch_name if branch else None,
+    )
+
+
+@router.post("/accept-invitation")
+def accept_invitation(payload: AcceptInvitationRequest, db: Session = Depends(get_db)):
+    crud_staff.accept_invitation(db, payload)
+    return {"detail": "Invitation accepted. You can now log in."}

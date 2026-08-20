@@ -35,6 +35,8 @@ class BusinessContext(BaseModel):
     business_name: str
     status: str
     role_code: str
+    branch_id: Optional[int] = None
+    branch_name: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

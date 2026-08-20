@@ -191,6 +191,16 @@ class BusinessMember(Base):
     membership row is created at registration time, alongside the Pending
     business record — approval activates the business, it does not create
     the ownership relationship.
+
+    Milestone 3 (Employee/Staff Invitation & Onboarding) adds invitation
+    state directly to this table rather than a new Invitation entity
+    (IMPLEMENTATION_DECISIONS.md ID-005): the token belongs to a specific
+    membership, not to the User identity. `requires_credential_setup` is
+    recorded explicitly at invite time and never re-derived from
+    `User.is_active` at acceptance (ID-005). `invited_branch_id` is a
+    temporary staging field for a pending Branch Manager invitation's target
+    branch — the real `BranchAssignment` row is only created on acceptance
+    (ID-010), and this field is cleared once that happens.
     """
     __tablename__ = "business_members"
 
@@ -204,6 +214,12 @@ class BusinessMember(Base):
 
     joined_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     left_at = Column(DateTime, nullable=True)
+
+    # Milestone 3 — invitation lifecycle (ID-005, ID-009, ID-010)
+    invitation_token_hash = Column(String, nullable=True, index=True)
+    invitation_token_expiry = Column(DateTime, nullable=True)
+    requires_credential_setup = Column(Boolean, nullable=False, default=False)
+    invited_branch_id = Column(Integer, ForeignKey("branches.id"), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("business_id", "user_id", name="uq_business_member_business_user"),
@@ -315,5 +331,13 @@ class BranchAssignment(Base):
             "business_member_id",
             unique=True,
             postgresql_where=text("is_current = true"),
+            # SQLite (used for the test suite's Base.metadata.create_all — see
+            # tests/conftest.py) silently drops postgresql_where and would
+            # otherwise create a full unique index on business_member_id,
+            # wrongly forbidding a second (historical) row for the same
+            # member. Only surfaced in Milestone 3, the first code to write a
+            # second BranchAssignment row. Production Postgres is unaffected
+            # — its DDL comes from the Alembic migration, not this line.
+            sqlite_where=text("is_current = true"),
         ),
     )

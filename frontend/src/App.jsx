@@ -7,7 +7,9 @@ import Dashboard from "./pages/Dashboard"
 import Profile from "./pages/Profile"
 import Admin from "./pages/Admin"
 import BranchManagement from "./pages/BranchManagement"
+import StaffManagement from "./pages/StaffManagement"
 import ResetPassword from "./pages/ResetPassword"
+import AcceptInvitation from "./pages/AcceptInvitation"
 
 import ProtectedRoute from "./components/ProtectedRoute"
 
@@ -24,6 +26,7 @@ function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
         <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/accept-invitation" element={<AcceptInvitation />} />
 
         {/* Protected routes */}
         <Route element={<ProtectedRoute />}>
@@ -39,6 +42,7 @@ function App() {
         {/* Business Owner routes */}
         <Route element={<ProtectedRoute businessOwnerOnly={true} />}>
           <Route path="/business/branches" element={<BranchManagement />} />
+          <Route path="/business/staff" element={<StaffManagement />} />
         </Route>
 
       </Routes>

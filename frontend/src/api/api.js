@@ -177,4 +177,36 @@ export const rejectBranch = (branchId, reason) => {
   return api.post(`/branches/${branchId}/reject`, { reason })
 }
 
+/*
+Staff / employee onboarding helpers (Milestone 3)
+*/
+
+export const listStaffForBusiness = (businessId) => {
+  return api.get(`/businesses/${businessId}/staff`)
+}
+
+export const inviteStaffMember = (businessId, data) => {
+  return api.post(`/businesses/${businessId}/staff/invite`, data)
+}
+
+export const resendStaffInvite = (businessId, memberId) => {
+  return api.post(`/businesses/${businessId}/staff/${memberId}/resend-invite`)
+}
+
+export const transferBranchManager = (memberId, branchId) => {
+  return api.post(`/business-members/${memberId}/transfer-branch`, { branch_id: branchId })
+}
+
+export const deactivateStaffMember = (memberId) => {
+  return api.post(`/business-members/${memberId}/deactivate`)
+}
+
+export const getInvitationStatus = (token) => {
+  return api.get("/auth/accept-invitation", { params: { token } })
+}
+
+export const acceptInvitation = (data) => {
+  return api.post("/auth/accept-invitation", data)
+}
+
 export default api
