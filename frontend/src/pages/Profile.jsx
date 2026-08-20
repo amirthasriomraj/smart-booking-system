@@ -6,6 +6,7 @@ import Navbar from "../components/Navbar"
 export default function Profile() {
 
   const [profile, setProfile] = useState(null)
+  const [error, setError] = useState(false)
 
   useEffect(() => {
 
@@ -23,6 +24,8 @@ export default function Profile() {
 
         console.error("Failed to fetch profile", error)
 
+        setError(true)
+
       }
 
     }
@@ -39,7 +42,9 @@ export default function Profile() {
 
       <h1>User Profile</h1>
 
-      {!profile ? (
+      {error ? (
+        <p>Failed to load profile.</p>
+      ) : !profile ? (
         <p>Loading profile...</p>
       ) : (
         <div>

@@ -51,6 +51,8 @@ export default function Navbar() {
         <>
           {" | "}
           <Link to="/business/branches">My Branches</Link>
+          {" | "}
+          <Link to="/business/staff">Staff</Link>
         </>
       )}
 
