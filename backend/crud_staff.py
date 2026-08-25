@@ -6,13 +6,32 @@ from typing import List, Optional, Tuple
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
 
-from models import User, UserProfile, Business, BusinessMember, Role, Branch, BranchAssignment
+from models import User, UserProfile, Business, BusinessMember, Role, Branch, BranchAssignment, Resource
 from audit import write_audit
 from auth import hash_password, validate_password
 from crud_branch import _require_active_owner_membership, get_branch_by_id
 
 INVITATION_TOKEN_TTL = timedelta(days=7)  # IMPLEMENTATION_DECISIONS.md ID-009
-INVITABLE_ROLE_CODES = {"BRANCH_MANAGER", "HR_USER"}
+
+# Milestone 4 (ID-014): RESOURCE_USER is added to the set of role codes that
+# flow through this shared invitation mechanism (token hash/expiry,
+# requires_credential_setup, /auth/accept-invitation — see accept_invitation
+# below, which handles all three codes). Its invitation flow has a different
+# authorization matrix (ID-016) and a different companion staging field
+# (linked_resource_id, not branch_id/invited_branch_id), so *creating* a
+# Resource User invitation goes through crud_resource.invite_resource_user,
+# not invite_staff_member() below — that stays scoped to
+# _STAFF_INVITE_ROLE_CODES (ID-006, unchanged from Milestone 3).
+#
+# Neither the PRD/TAS nor IMPLEMENTATION_DECISIONS.md says Resource Users
+# should appear in the Milestone 3 Business Owner "Staff" list/UI — that
+# surface (list_staff below, StaffManagement.jsx) was built for Branch
+# Manager/HR onboarding. Resource Users are listed/managed through the
+# dedicated Milestone 4 endpoints instead (crud_resource.list_resource_users,
+# GET /businesses/{id}/resource-users). list_staff therefore filters on
+# _STAFF_INVITE_ROLE_CODES, not the broader INVITABLE_ROLE_CODES.
+INVITABLE_ROLE_CODES = {"BRANCH_MANAGER", "HR_USER", "RESOURCE_USER"}
+_STAFF_INVITE_ROLE_CODES = {"BRANCH_MANAGER", "HR_USER"}
 
 
 # -------------------------
@@ -101,7 +120,7 @@ def invite_staff_member(db: Session, business_id: int, payload, current_user: Us
     if business.status != "Active":
         raise HTTPException(status_code=409, detail="Business must be Active before inviting staff")
 
-    if payload.role_code not in INVITABLE_ROLE_CODES:
+    if payload.role_code not in _STAFF_INVITE_ROLE_CODES:
         raise HTTPException(status_code=400, detail="role_code must be BRANCH_MANAGER or HR_USER")
 
     role = _get_role_by_code(db, payload.role_code)
@@ -248,11 +267,16 @@ def resend_invitation(db: Session, business_id: int, member_id: int, current_use
 # -------------------------
 
 def list_staff(db: Session, business_id: int, current_user: User) -> List[BusinessMember]:
+    """
+    Milestone 3's Staff list — Branch Manager / HR User only (unchanged).
+    Resource Users are listed separately via
+    crud_resource.list_resource_users (ID-016).
+    """
     _require_active_owner_membership(db, business_id, current_user)
     return (
         db.query(BusinessMember)
         .join(Role, BusinessMember.role_id == Role.id)
-        .filter(BusinessMember.business_id == business_id, Role.code.in_(INVITABLE_ROLE_CODES))
+        .filter(BusinessMember.business_id == business_id, Role.code.in_(_STAFF_INVITE_ROLE_CODES))
         .order_by(BusinessMember.joined_at.desc())
         .all()
     )
@@ -446,6 +470,15 @@ def accept_invitation(db: Session, payload) -> BusinessMember:
             is_current=True,
         ))
         member.invited_branch_id = None  # ID-010: cleared once the real assignment exists
+    elif role.code == "RESOURCE_USER":
+        # ID-014: mirrors the BRANCH_MANAGER staging pattern above, using
+        # linked_resource_id/Resource.linked_user_id instead of
+        # invited_branch_id/BranchAssignment.
+        resource = db.query(Resource).filter(Resource.id == member.linked_resource_id).first()
+        if not resource:
+            raise HTTPException(status_code=409, detail="The linked Resource no longer exists")
+        resource.linked_user_id = user.id
+        member.linked_resource_id = None
 
     previous_status = member.status
     member.status = "Active"

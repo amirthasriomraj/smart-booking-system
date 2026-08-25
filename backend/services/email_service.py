@@ -43,6 +43,7 @@ def send_staff_invitation_email(email: str, token: str, role_code: str, business
     role_label = {
         "BRANCH_MANAGER": "Branch Manager",
         "HR_USER": "Human Resource User",
+        "RESOURCE_USER": "Resource User",
     }.get(role_code, role_code)
 
     msg = EmailMessage()

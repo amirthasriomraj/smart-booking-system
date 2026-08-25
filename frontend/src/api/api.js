@@ -209,4 +209,62 @@ export const acceptInvitation = (data) => {
   return api.post("/auth/accept-invitation", data)
 }
 
+/*
+Resource Management helpers (Milestone 4)
+*/
+
+export const listResourceCategories = (businessId) => {
+  return api.get(`/businesses/${businessId}/resource-categories`)
+}
+
+export const createResourceCategory = (businessId, data) => {
+  return api.post(`/businesses/${businessId}/resource-categories`, data)
+}
+
+export const updateResourceCategory = (categoryId, data) => {
+  return api.patch(`/resource-categories/${categoryId}`, data)
+}
+
+export const listResourcesForBranch = (branchId) => {
+  return api.get(`/branches/${branchId}/resources`)
+}
+
+export const listResourcesForBusiness = (businessId) => {
+  return api.get(`/businesses/${businessId}/resources`)
+}
+
+export const createResource = (branchId, data) => {
+  return api.post(`/branches/${branchId}/resources`, data)
+}
+
+export const updateResource = (resourceId, data) => {
+  return api.patch(`/resources/${resourceId}`, data)
+}
+
+export const activateResource = (resourceId) => api.post(`/resources/${resourceId}/activate`)
+
+export const suspendResource = (resourceId) => api.post(`/resources/${resourceId}/suspend`)
+
+export const getResourceWorkingHours = (resourceId) => api.get(`/resources/${resourceId}/working-hours`)
+
+export const upsertResourceWorkingHours = (resourceId, hours) => {
+  return api.put(`/resources/${resourceId}/working-hours`, { hours })
+}
+
+export const listResourceUsers = (businessId) => {
+  return api.get(`/businesses/${businessId}/resource-users`)
+}
+
+export const inviteResourceUser = (businessId, resourceId, email) => {
+  return api.post(`/businesses/${businessId}/resources/${resourceId}/invite-user`, { email })
+}
+
+export const resendResourceInvite = (memberId) => {
+  return api.post(`/business-members/${memberId}/resend-resource-invite`)
+}
+
+export const deactivateResourceUser = (memberId) => {
+  return api.post(`/business-members/${memberId}/deactivate-resource-user`)
+}
+
 export default api

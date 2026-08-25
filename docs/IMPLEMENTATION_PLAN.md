@@ -66,7 +66,9 @@ Refer to `IMPLEMENTATION_DECISIONS.md` for approved post-freeze Branch and HR cl
 
 ## Milestone 3 — Employee / Staff Invitation & Onboarding
 
-**Status: NEXT**
+**Status: COMPLETED**
+
+Implementation is already merged into `main`.
 
 Purpose:
 
@@ -99,7 +101,9 @@ This milestone must be completed before relying on Branch Manager scoping or log
 
 ## Milestone 4 — Resource Management
 
-**Status: PLANNED**
+**Status: NEXT**
+
+Refer to `IMPLEMENTATION_DECISIONS.md` for approved post-freeze Resource Management clarifications.
 
 Scope:
 

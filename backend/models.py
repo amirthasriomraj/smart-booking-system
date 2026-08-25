@@ -221,6 +221,12 @@ class BusinessMember(Base):
     requires_credential_setup = Column(Boolean, nullable=False, default=False)
     invited_branch_id = Column(Integer, ForeignKey("branches.id"), nullable=True)
 
+    # Milestone 4 — Resource User invitation staging (ID-014). Mirrors
+    # invited_branch_id: stages which Resource a pending Resource User
+    # invitation belongs to; cleared once Resource.linked_user_id is set on
+    # acceptance.
+    linked_resource_id = Column(Integer, ForeignKey("resources.id"), nullable=True)
+
     __table_args__ = (
         UniqueConstraint("business_id", "user_id", name="uq_business_member_business_user"),
     )
@@ -340,4 +346,90 @@ class BranchAssignment(Base):
             # — its DDL comes from the Alembic migration, not this line.
             sqlite_where=text("is_current = true"),
         ),
+    )
+
+
+# -------------------------
+# RESOURCE MANAGEMENT (Milestone 4)
+# TAS Part 3 §7; PRD §14.1-14.6
+# -------------------------
+
+class ResourceCategory(Base):
+    """Business-defined grouping of resources (TAS Part 3 §7; PRD §14.2)."""
+    __tablename__ = "resource_categories"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    business_id = Column(Integer, ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    category_name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class Resource(Base):
+    """
+    Generic Resource — anything reservable/assignable to perform a service
+    (TAS Part 3 §7; PRD §14.1-14.5).
+
+    `business_id` is denormalized from `branch.business_id` at creation and
+    is not independently mutable (ID-012 — resolves a TAS §7/business_id-list
+    inconsistency; not present in the TAS §7 column list itself).
+
+    `max_bookings_per_day` / `booking_buffer_minutes` are V1-mandatory
+    (PRD §14.3) storage-only attributes added here; enforcement against
+    actual bookings is Milestone 7 scope (ID-013).
+
+    `linked_user_id` is populated only once a `requires_login = true`
+    Resource's invited Resource User accepts (ID-014); it stays NULL for a
+    Resource that never requires login.
+    """
+    __tablename__ = "resources"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    branch_id = Column(Integer, ForeignKey("branches.id", ondelete="CASCADE"), nullable=False, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False, index=True)  # ID-012
+    resource_category_id = Column(Integer, ForeignKey("resource_categories.id"), nullable=False, index=True)
+    linked_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    resource_name = Column(String, nullable=False)
+    code = Column(String, nullable=True)
+    description = Column(String, nullable=True)
+
+    status = Column(String, nullable=False, default="Pending", index=True)
+    requires_login = Column(Boolean, nullable=False, default=False)
+
+    # V1-mandatory scheduling/configuration attributes not in the TAS §7
+    # Resources column list (ID-013). Storage only in Milestone 4.
+    max_bookings_per_day = Column(Integer, nullable=True)
+    booking_buffer_minutes = Column(Integer, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ResourceWorkingHours(Base):
+    """
+    Per-weekday hours overriding inherited branch hours (TAS Part 3 §7).
+
+    `break_start_time` / `break_end_time` (one break window per weekday row)
+    are V1-mandatory (PRD §14.3 "Break Timings") columns not in the TAS §7
+    Resource Working Hours column list; storage only in Milestone 4 (ID-013).
+    """
+    __tablename__ = "resource_working_hours"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    resource_id = Column(Integer, ForeignKey("resources.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    weekday = Column(Integer, nullable=False)  # 0=Monday .. 6=Sunday
+    opening_time = Column(Time, nullable=True)
+    closing_time = Column(Time, nullable=True)
+    is_closed = Column(Boolean, nullable=False, default=False)
+    break_start_time = Column(Time, nullable=True)
+    break_end_time = Column(Time, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("resource_id", "weekday", name="uq_resource_working_hours_resource_weekday"),
     )

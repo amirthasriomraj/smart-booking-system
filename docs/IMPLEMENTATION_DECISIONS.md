@@ -199,3 +199,80 @@ Branch Manager transfer (moving an Active Branch Manager from one Approved Branc
 
 **Reason:**  
 This is not a new decision but a scheduling confirmation of ID-004, which already states that "assignment/transfer workflows are implemented when the relevant employee/staff onboarding functionality is introduced" — i.e., this milestone. Recorded here explicitly during Milestone 3 planning so milestone scope is not re-derived from the ID-004 cross-reference alone.
+
+---
+
+## ID-012 — Resource Tenant Ownership (`business_id`)
+
+**Decision:**  
+`Resource` includes an explicit `business_id` column, denormalized from `branch.business_id` at creation, in addition to `branch_id`. `business_id` is set once at creation from the owning branch and is not independently mutable.
+
+This resolves an internal inconsistency in the frozen TAS: §7's `Resources` column list omits `business_id`, while the TAS's "Entities requiring business_id" list explicitly names `Resource` and `Resource Category` as tenant-owned entities requiring it.
+
+**Reason:**  
+Resolved during Milestone 4 planning to make Resource conform to the platform's tenant-isolation architecture (PRD §28, TAS business_id-isolation rule) and to allow efficient business-wide Resource queries (e.g. Business Owner "manage all resources") without requiring a join through `branches` on every request — consistent with how `Branch` and `AuditLog` already carry `business_id`.
+
+---
+
+## ID-013 — Resource Scheduling/Configuration Attributes: Stored in Milestone 4, Enforced in Milestone 7
+
+**Decision:**  
+Milestone 4 adds storage for the V1-mandatory Resource scheduling/configuration attributes that the frozen TAS's `ResourceWorkingHours` table has no columns for: `Resource.max_bookings_per_day`, `Resource.booking_buffer_minutes`, and `ResourceWorkingHours.break_start_time` / `break_end_time` (one break window per weekday row).
+
+These columns are configuration/storage only in Milestone 4. Enforcing them against actual bookings (validating buffer time, break conflicts, or daily booking caps) is Booking Engine scope (Milestone 7) and is not implemented here.
+
+**Reason:**  
+Resolved during Milestone 4 planning because PRD §14.3 mandates these as required Resource attributes for V1, but the frozen TAS's Resource Working Hours schema does not define columns for them. Per CLAUDE.md, mandatory V1 requirements are not silently deferred, so the fields are added now even though their enforcement logic belongs to a later milestone.
+
+---
+
+## ID-014 — Resource User Invitation and Linking Lifecycle
+
+**Decision:**  
+Resource User invitations reuse the Milestone 3 `BusinessMember` invitation mechanism (token hash/expiry, `requires_credential_setup`, `/auth/accept-invitation`), with `RESOURCE_USER` added to `INVITABLE_ROLE_CODES`.
+
+A nullable `BusinessMember.linked_resource_id` (FK → `resources`) stages which `Resource` row an in-flight Resource User invitation belongs to, mirroring the `invited_branch_id` staging pattern introduced for Branch Manager invitations in ID-010. On successful acceptance, `Resource.linked_user_id` is set to the accepted `User`'s id and `BusinessMember.linked_resource_id` is cleared.
+
+A Resource with `requires_login = true` cannot transition to `status = Active` until this linkage has completed (i.e. `linked_user_id` is populated). A Resource with `requires_login = false` may be activated without ever having a linked User.
+
+Later deactivating the linked `BusinessMember` (revoking Resource User login) does not automatically change `Resource.status` — Resource schedulability and Resource User login access are tracked independently, the same way ID-008 keeps `User.is_active` independent of `BusinessMember.status`.
+
+**Reason:**  
+Resolved during Milestone 4 planning. Neither the PRD nor TAS specifies how an accepted invitation maps back to a specific Resource record, nor whether a login-required Resource may be activated before its invitation is accepted. This decision fixes both gaps: it follows PRD §14.4's Resource Lifecycle diagram, which places "(Optional) Invite Login" before "Activate," and it preserves the status-orthogonality principle ID-008 established for staff invitations.
+
+---
+
+## ID-015 — Resource Category Ownership and Lifecycle Scope
+
+**Decision:**  
+Resource Category create/update is Business Owner-only. Branch Manager and HR User have read-only access to Resource Categories, limited to what their authorized Resource workflows require (e.g. populating a category picker); they cannot create or modify categories.
+
+Milestone 4 implements Resource Category create/list/update only. No delete, archive, or status field/behavior is introduced for Resource Category.
+
+**Reason:**  
+Resolved during Milestone 4 planning. PRD §14.2 states only that "each Business defines its own Resource Categories," without naming which role performs that action; this decision resolves it by analogy to Service Templates, another business-level entity that PRD §10.2 makes Business-Owner-only. The frozen TAS schema for Resource Category has no status/archive column, so no delete/archive behavior is invented for it.
+
+---
+
+## ID-016 — Resource Management Authorization Matrix
+
+**Decision:**  
+Resource management authority in Milestone 4 is:
+
+- Business Owner: business-wide Resource record CRUD/configuration/status across every branch in their business, Resource Category create/update, and Resource User invite/resend/deactivate for any resource in their business.
+- Branch Manager: the same Resource record CRUD/configuration/status and Resource User invite/resend/deactivate operations, restricted to their currently assigned branch only; read-only on Resource Categories.
+- HR User: business-wide Resource User account administration (invite/resend/deactivate) plus the read access necessary for that workflow; no Resource record, Resource Category, or configuration CRUD.
+- Platform Administrator: no tenant Resource-management operations, consistent with PRD §10.1's restriction against participating in tenant day-to-day operations.
+
+**Reason:**  
+Resolved during Milestone 4 planning. PRD §10.2/§10.3 grant Business Owner and Branch Manager overlapping but not identically-worded Resource permissions ("Manage all resources" vs. "Invite Resources with login access" / "Create Resources without login"), and PRD §10.4's Human Resource "Resource login management" responsibility is unscoped as to whether it extends to full Resource CRUD. This decision makes the split explicit and final, extending ID-006's reading (HR's invitation-issuing authority applies to Resource invitations from Milestone 4 onward) to a complete authorization matrix.
+
+---
+
+## ID-017 — Resource.requires_login Is Immutable After Creation
+
+**Decision:**  
+`Resource.requires_login` is set once at creation and cannot be changed afterward; `ResourceUpdateRequest` (the Resource configuration PATCH) does not accept it as a field.
+
+**Reason:**  
+Resolved during Milestone 4 review. Neither the frozen PRD nor TAS explicitly states whether `requires_login` may change after creation. PRD §14.5 ("Resource Creation") describes the login-credentials choice as made "if the creator chooses" at creation time, which supports immutability, while PRD §14.4's lifecycle (Create → Configure → (Optional) Invite Login → Activate) leaves room to read it as still adjustable during "Configure." Presented to the user as three options — immutable after creation, mutable only while Pending, or freely mutable — because any mutable option requires inventing undefined behavior for what happens to an in-flight invitation or an already-linked Resource User when the flag changes. The user chose immutable after creation, avoiding that invented behavior entirely.

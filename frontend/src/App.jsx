@@ -8,6 +8,7 @@ import Profile from "./pages/Profile"
 import Admin from "./pages/Admin"
 import BranchManagement from "./pages/BranchManagement"
 import StaffManagement from "./pages/StaffManagement"
+import ResourceManagement from "./pages/ResourceManagement"
 import ResetPassword from "./pages/ResetPassword"
 import AcceptInvitation from "./pages/AcceptInvitation"
 
@@ -32,6 +33,9 @@ function App() {
         <Route element={<ProtectedRoute />}>
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/profile" element={<Profile />} />
+          {/* Role-gated inside the component itself: Business Owner, Branch
+              Manager, and HR User each see a different subset (ID-016). */}
+          <Route path="/business/resources" element={<ResourceManagement />} />
         </Route>
 
         {/* Admin routes */}

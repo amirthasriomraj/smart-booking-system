@@ -5,6 +5,7 @@ import { getInvitationStatus, acceptInvitation } from "../api/api"
 const ROLE_LABELS = {
   BRANCH_MANAGER: "Branch Manager",
   HR_USER: "HR User",
+  RESOURCE_USER: "Resource User",
 }
 
 export default function AcceptInvitation() {
