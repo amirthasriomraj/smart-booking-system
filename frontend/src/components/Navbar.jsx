@@ -11,6 +11,9 @@ export default function Navbar() {
 
   const isPlatformAdmin = user?.is_platform_admin
   const isActiveBusinessOwner = user?.business?.role_code === "BUSINESS_OWNER" && user?.business?.status === "Active"
+  const canManageResources =
+    user?.business?.status === "Active" &&
+    ["BUSINESS_OWNER", "BRANCH_MANAGER", "HR_USER"].includes(user?.business?.role_code)
 
   const handleLogout = async () => {
 
@@ -53,6 +56,13 @@ export default function Navbar() {
           <Link to="/business/branches">My Branches</Link>
           {" | "}
           <Link to="/business/staff">Staff</Link>
+        </>
+      )}
+
+      {canManageResources && (
+        <>
+          {" | "}
+          <Link to="/business/resources">Resources</Link>
         </>
       )}
 

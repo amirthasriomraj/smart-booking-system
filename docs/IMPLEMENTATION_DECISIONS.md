@@ -266,3 +266,13 @@ Resource management authority in Milestone 4 is:
 
 **Reason:**  
 Resolved during Milestone 4 planning. PRD §10.2/§10.3 grant Business Owner and Branch Manager overlapping but not identically-worded Resource permissions ("Manage all resources" vs. "Invite Resources with login access" / "Create Resources without login"), and PRD §10.4's Human Resource "Resource login management" responsibility is unscoped as to whether it extends to full Resource CRUD. This decision makes the split explicit and final, extending ID-006's reading (HR's invitation-issuing authority applies to Resource invitations from Milestone 4 onward) to a complete authorization matrix.
+
+---
+
+## ID-017 — Resource.requires_login Is Immutable After Creation
+
+**Decision:**  
+`Resource.requires_login` is set once at creation and cannot be changed afterward; `ResourceUpdateRequest` (the Resource configuration PATCH) does not accept it as a field.
+
+**Reason:**  
+Resolved during Milestone 4 review. Neither the frozen PRD nor TAS explicitly states whether `requires_login` may change after creation. PRD §14.5 ("Resource Creation") describes the login-credentials choice as made "if the creator chooses" at creation time, which supports immutability, while PRD §14.4's lifecycle (Create → Configure → (Optional) Invite Login → Activate) leaves room to read it as still adjustable during "Configure." Presented to the user as three options — immutable after creation, mutable only while Pending, or freely mutable — because any mutable option requires inventing undefined behavior for what happens to an in-flight invitation or an already-linked Resource User when the flag changes. The user chose immutable after creation, avoiding that invented behavior entirely.
