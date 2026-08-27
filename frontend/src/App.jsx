@@ -9,6 +9,7 @@ import Admin from "./pages/Admin"
 import BranchManagement from "./pages/BranchManagement"
 import StaffManagement from "./pages/StaffManagement"
 import ResourceManagement from "./pages/ResourceManagement"
+import ServiceManagement from "./pages/ServiceManagement"
 import ResetPassword from "./pages/ResetPassword"
 import AcceptInvitation from "./pages/AcceptInvitation"
 
@@ -36,6 +37,10 @@ function App() {
           {/* Role-gated inside the component itself: Business Owner, Branch
               Manager, and HR User each see a different subset (ID-016). */}
           <Route path="/business/resources" element={<ResourceManagement />} />
+          {/* Role-gated inside the component itself: Business Owner and
+              Branch Manager only — HR User and Platform Admin have no
+              Service Management access (ID-027). */}
+          <Route path="/business/services" element={<ServiceManagement />} />
         </Route>
 
         {/* Admin routes */}

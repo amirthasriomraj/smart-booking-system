@@ -101,7 +101,9 @@ This milestone must be completed before relying on Branch Manager scoping or log
 
 ## Milestone 4 — Resource Management
 
-**Status: NEXT**
+**Status: COMPLETED**
+
+Implementation is already merged into `main`.
 
 Refer to `IMPLEMENTATION_DECISIONS.md` for approved post-freeze Resource Management clarifications.
 
@@ -123,7 +125,9 @@ Do not implement future resource-capacity booking functionality.
 
 ## Milestone 5 — Service Management
 
-**Status: PLANNED**
+**Status: NEXT**
+
+Refer to `IMPLEMENTATION_DECISIONS.md` for approved post-freeze Service Management clarifications (ID-018–ID-027).
 
 Scope:
 

@@ -6,6 +6,7 @@ from typing import Optional, List
 from models import User, Business, BusinessMember, Role, Branch, BranchWorkingHours, Country
 from audit import write_audit
 from dependencies import user_has_role
+import crud_service
 
 BUSINESS_OWNER_ROLE_CODE = "BUSINESS_OWNER"
 
@@ -100,6 +101,9 @@ def create_branch(db: Session, business_id: int, payload, current_user: User) ->
         new_value="approval_status=Pending",
         commit=False,
     )
+
+    # ID-023(a): new Branch inherits every current Active Service Template.
+    crud_service.inherit_templates_to_branch(db, branch, current_user.id)
 
     db.commit()
     db.refresh(branch)

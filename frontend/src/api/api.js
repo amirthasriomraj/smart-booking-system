@@ -267,4 +267,48 @@ export const deactivateResourceUser = (memberId) => {
   return api.post(`/business-members/${memberId}/deactivate-resource-user`)
 }
 
+/*
+Service Management helpers (Milestone 5)
+*/
+
+export const listServiceTemplates = (businessId) => {
+  return api.get(`/businesses/${businessId}/service-templates`)
+}
+
+export const createServiceTemplate = (businessId, data) => {
+  return api.post(`/businesses/${businessId}/service-templates`, data)
+}
+
+export const getServiceTemplate = (templateId) => api.get(`/service-templates/${templateId}`)
+
+export const activateServiceTemplate = (templateId) => api.post(`/service-templates/${templateId}/activate`)
+
+export const deactivateServiceTemplate = (templateId) => api.post(`/service-templates/${templateId}/deactivate`)
+
+export const listBranchServicesForBranch = (branchId) => {
+  return api.get(`/branches/${branchId}/branch-services`)
+}
+
+export const listBranchServicesForBusiness = (businessId) => {
+  return api.get(`/businesses/${businessId}/branch-services`)
+}
+
+export const getBranchService = (branchServiceId) => api.get(`/branch-services/${branchServiceId}`)
+
+export const updateBranchService = (branchServiceId, data) => {
+  return api.patch(`/branch-services/${branchServiceId}`, data)
+}
+
+export const submitBranchServiceOverride = (branchServiceId, data) => {
+  return api.post(`/branch-services/${branchServiceId}/submit-override`, data)
+}
+
+export const listServiceApprovals = (businessId) => {
+  return api.get(`/businesses/${businessId}/service-approvals`)
+}
+
+export const decideServiceApproval = (approvalId, decision, comments) => {
+  return api.post(`/service-approvals/${approvalId}/decide`, { decision, comments })
+}
+
 export default api
