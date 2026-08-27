@@ -5,17 +5,24 @@ from sqlalchemy import (
     Text,
     Date,
     Time,
+    Numeric,
     ForeignKey,
     UniqueConstraint,
     Boolean,
     DateTime,
     Index,
+    JSON,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
 from database import Base
+
+# Structured JSON storage: real JSONB on PostgreSQL, plain JSON on SQLite
+# (the test suite's Base.metadata.create_all dialect — see tests/conftest.py).
+JSONVariant = JSONB().with_variant(JSON(), "sqlite")
 
 
 class User(Base):
@@ -433,3 +440,152 @@ class ResourceWorkingHours(Base):
     __table_args__ = (
         UniqueConstraint("resource_id", "weekday", name="uq_resource_working_hours_resource_weekday"),
     )
+
+
+# -------------------------
+# SERVICE MANAGEMENT (Milestone 5)
+# TAS Part 3 §8; PRD §15.1-15.6
+# -------------------------
+
+class ServiceTemplate(Base):
+    """
+    Business-level master service definition (TAS Part 3 §8; PRD §15.1).
+
+    `business_id` is the direct owner (ID-024 — not present in the TAS §8
+    column list itself, resolving the same business_id inconsistency ID-012
+    already resolved for Resource).
+
+    Create-once: no general update endpoint exists for name/description/
+    duration/price/etc. after creation (ID-019 — "Templates remain
+    immutable"). Only `status` (Active/Inactive) is ever toggled after
+    creation.
+
+    `default_buffer_minutes` / `default_working_rules` are V1-mandatory
+    (PRD §15.1) storage-only attributes not in the TAS §8 column list
+    (ID-025). `default_working_rules` is deliberately opaque — no internal
+    structure or enforcement is defined or built in Milestone 5.
+    """
+    __tablename__ = "service_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    business_id = Column(Integer, ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False, index=True)  # ID-024
+
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    default_duration = Column(Integer, nullable=False)
+    default_price = Column(Numeric(10, 2), nullable=False)
+
+    # V1-mandatory fields not in the TAS §8 Service Templates column list (ID-025).
+    default_buffer_minutes = Column(Integer, nullable=True)
+    default_working_rules = Column(JSONVariant, nullable=True)
+
+    status = Column(String, nullable=False, default="Active", index=True)  # ID-019: Active / Inactive only
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class ServiceTemplateResourceCategory(Base):
+    """Default Resource Categories for a Service Template (PRD §15.1, §15.6)."""
+    __tablename__ = "service_template_resource_categories"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    service_template_id = Column(Integer, ForeignKey("service_templates.id", ondelete="CASCADE"), nullable=False, index=True)
+    resource_category_id = Column(Integer, ForeignKey("resource_categories.id"), nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "service_template_id", "resource_category_id",
+            name="uq_service_template_resource_category",
+        ),
+    )
+
+
+class BranchService(Base):
+    """
+    Branch-specific implementation of a Service Template (TAS Part 3 §8;
+    PRD §15.2-15.4).
+
+    Always references a Service Template — there is no template-less Branch
+    Service (ID-018). `business_id` is denormalized from `branch.business_id`
+    at creation and is not independently mutable (ID-024).
+
+    `status` is a 5-value lifecycle with no separate "Active" state —
+    `Approved` is itself the live/bookable state (ID-020). `duration`/
+    `price` are always the current *effective* configuration; a pending
+    override's proposed values live only on `ServiceApproval` (ID-021).
+    `pending_approval` is a separate boolean (TAS §8), true while a
+    submitted override awaits a Business Owner decision.
+    """
+    __tablename__ = "branch_services"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    branch_id = Column(Integer, ForeignKey("branches.id", ondelete="CASCADE"), nullable=False, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False, index=True)  # ID-024
+    service_template_id = Column(Integer, ForeignKey("service_templates.id"), nullable=False, index=True)  # ID-018
+
+    duration = Column(Integer, nullable=False)
+    price = Column(Numeric(10, 2), nullable=False)
+
+    status = Column(String, nullable=False, default="Approved", index=True)  # ID-020
+    pending_approval = Column(Boolean, nullable=False, default=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("branch_id", "service_template_id", name="uq_branch_service_branch_template"),
+    )
+
+
+class BranchServiceResourceCategory(Base):
+    """
+    Live/effective Resource Category assignment for a Branch Service
+    (PRD §15.6). Branch-overridable, independent of the Service Template's
+    default assignment (ServiceTemplateResourceCategory).
+    """
+    __tablename__ = "branch_service_resource_categories"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    branch_service_id = Column(Integer, ForeignKey("branch_services.id", ondelete="CASCADE"), nullable=False, index=True)
+    resource_category_id = Column(Integer, ForeignKey("resource_categories.id"), nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "branch_service_id", "resource_category_id",
+            name="uq_branch_service_resource_category",
+        ),
+    )
+
+
+class ServiceApproval(Base):
+    """
+    Tracks Branch Service override approvals (TAS Part 3 §8; PRD §15.4,
+    §25.5). `previous_configuration` / `proposed_configuration` are
+    structured JSONB snapshots (ID-021) — not in the TAS §8 column list —
+    holding {duration, price, resource_category_ids} so the record remains
+    a complete historical account after the decision, while BranchService
+    itself only ever holds the current effective configuration.
+    """
+    __tablename__ = "service_approvals"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    branch_service_id = Column(Integer, ForeignKey("branch_services.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    requested_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    approved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    decision = Column(String, nullable=False, default="Pending", index=True)  # Pending / Approved / Rejected
+
+    previous_configuration = Column(JSONVariant, nullable=False)  # ID-021
+    proposed_configuration = Column(JSONVariant, nullable=False)  # ID-021
+
+    comments = Column(Text, nullable=True)
+    decided_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

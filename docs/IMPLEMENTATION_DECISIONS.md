@@ -276,3 +276,125 @@ Resolved during Milestone 4 planning. PRD §10.2/§10.3 grant Business Owner and
 
 **Reason:**  
 Resolved during Milestone 4 review. Neither the frozen PRD nor TAS explicitly states whether `requires_login` may change after creation. PRD §14.5 ("Resource Creation") describes the login-credentials choice as made "if the creator chooses" at creation time, which supports immutability, while PRD §14.4's lifecycle (Create → Configure → (Optional) Invite Login → Activate) leaves room to read it as still adjustable during "Configure." Presented to the user as three options — immutable after creation, mutable only while Pending, or freely mutable — because any mutable option requires inventing undefined behavior for what happens to an in-flight invitation or an already-linked Resource User when the flag changes. The user chose immutable after creation, avoiding that invented behavior entirely.
+
+---
+
+## ID-018 — No Template-less Branch Services
+
+**Decision:**  
+Every `BranchService` always references a `ServiceTemplate` (`service_template_id` is `NOT NULL`). There is no path to create a Branch Service that does not originate from a Business-level Service Template.
+
+PRD §10.3's "Create branch-specific services" and §25.2's "New Branch Services" (as a category requiring Business-Level Approval) are read as the Branch Manager's *first-time customization* of an already-inherited service, not creation of a service from scratch.
+
+**Reason:**  
+Resolved during Milestone 5 planning. PRD §15.2 states "Branch Services maintain a reference to their originating template," which is incompatible with a template-less Branch Service. The alternative reading (a nullable `service_template_id` with the Branch Manager manually supplying name/duration/price) would require inventing fields, validation, and an approval shape the frozen documents never define for that case. The user chose to keep every Branch Service template-derived.
+
+---
+
+## ID-019 — Service Template Is Create-Once; No Field-Level Edit After Creation
+
+**Decision:**  
+`ServiceTemplate` supports Create, Read, and an Active/Inactive status toggle only. There is no general update endpoint for name, description, duration, price, default resource categories, default buffer time, or default working rules after creation. To change a template's definition, the Business Owner creates a new template; the old one can be set Inactive.
+
+**Reason:**  
+Resolved during Milestone 5 planning. TAS Part 4 §5 (Service Inheritance Engine) states "Templates remain immutable" as its own unqualified design principle, separate from the neighboring "Branch overrides do not modify the original template" bullet — treated as the general rule, not a restatement scoped only to branch-override protection. No PRD passage anywhere uses "edit," "update," or "archive" in connection with a template. PRD §10.2's Responsibilities list names only "Create business-level service templates" for the Business Owner; the separate, generic "Edit services. Archive services." Permissions bullet never says "templates" and is read as applying to Branch Services, which the Business Owner already controls business-wide. The user confirmed this reading over the alternative of a general Template PATCH, which would also have reopened an undefined question of whether such edits sync to already-inherited Branch Services.
+
+---
+
+## ID-020 — Branch Service Status Has No Separate "Active" State
+
+**Decision:**  
+`BranchService.status` is a 5-value enum: `Draft`, `Pending Approval`, `Approved`, `Suspended`, `Archived`. `Approved` is itself the live/bookable state — there is no separate `Active` value and no action that transitions a Branch Service from `Approved` to some further `Active` state. `pending_approval` (TAS §8) remains a separate boolean, independent of `status`.
+
+No Milestone 5 action is wired to reach `Suspended` (no rule names an actor who may suspend a Branch Service) or `Archived` (PRD §15.5 itself marks this "(Future)"). Both values exist in the column only for naming-fidelity with §15.5's lifecycle diagram. `Draft` is likewise never produced by any Milestone 5 workflow, since inheritance always creates an `Approved` row (ID-023) and ID-018 rules out from-scratch creation.
+
+**Reason:**  
+Resolved during Milestone 5 planning. Every booking-validation checklist in the frozen PRD tests Service against exactly one gate — "Service is Active" (§16.3, §16.5) or "Service is Approved" (§15.5, §24, BR-033, BR-043) — never both together in the same list, unlike Branch, where §24/§16 explicitly list "Branch is Approved" **and** "Branch is Active" as two separate checks. No rule names any actor or action for a manual Approved→Active transition for Branch Service, unlike Resource (explicit `activate`/`suspend` actions) or Branch (Business-Owner-controlled `is_active`). Treating Approved and Active as independently meaningful, separately-controlled states was considered and rejected as an unsupported analogy to Branch's ID-001 split.
+
+---
+
+## ID-021 — Pending Override Storage: Structured JSONB Snapshots on ServiceApproval
+
+**Decision:**  
+`BranchService` holds only the current effective configuration (`duration`, `price`, and its live Resource Category assignments). `ServiceApproval` holds `previous_configuration` and `proposed_configuration` as structured JSONB snapshots (each containing `duration`, `price`, `resource_category_ids`), in addition to its TAS-defined columns (`branch_service_id`, `requested_by`, `approved_by`, `decision`, `comments`, `decided_at`).
+
+Submitting an override creates a `ServiceApproval` row (`decision = Pending`) with `previous_configuration` set to the Branch Service's current live values and `proposed_configuration` set to the requested values, and sets `BranchService.pending_approval = true`. Live columns are untouched at submission time.
+
+On approval: `proposed_configuration` is copied onto the live `BranchService` columns, `pending_approval` is cleared, and the `ServiceApproval` row (with both snapshots) is retained as history.
+
+On rejection: live columns are left untouched, `pending_approval` is cleared, and the `ServiceApproval` row is retained as history.
+
+The JSONB columns use `JSONB().with_variant(JSON(), "sqlite")` for test-database compatibility, consistent with the existing dual-dialect pattern used for `BranchAssignment`'s partial unique index.
+
+**Reason:**  
+Resolved during Milestone 5 planning. TAS §8's `service_approvals` column list has no field for the proposed values, yet PRD §15.4/BR-034 require the existing approved configuration to keep operating, untouched, until a decision is made — which is only possible if the proposed values are held separately from the live configuration. A shadow-columns-on-`BranchService` alternative was considered; the user chose a structured JSONB snapshot on `ServiceApproval` instead, so the approval record remains a complete, self-contained historical account after the decision, and `BranchService` continues to hold only ever the currently effective configuration.
+
+---
+
+## ID-022 — "Service Availability Changes" Is Out of Milestone 5 Scope
+
+**Decision:**  
+Of PRD §15.4's four "Examples requiring approval," only three are implemented as overridable, approval-gated fields in Milestone 5: **Price, Duration, and Resource Category assignment.** "Service availability changes" is not implemented as a Branch Service field, and no Suspend/Reinstate-via-approval workflow is built for Branch Service in Milestone 5.
+
+**Reason:**  
+Resolved during Milestone 5 planning. Every other occurrence of "availability" tied to Service in the frozen documents is a booking-time/runtime concept (PRD §19.2 Reschedule Rules; TAS Part 4 §3 Availability Engine, "Determines whether a requested booking slot is available... never creates bookings") — explicitly Milestone 7 scope per `IMPLEMENTATION_PLAN.md`'s own Milestone 5 guardrail against pulling booking/availability behavior forward. No rule defines a Suspend/Reinstate action for Branch Service, names who could trigger one, or resolves how it would coexist with §15.4's "existing approved configuration continues to operate until approval" (a pending suspend request would otherwise have to remain bookable, which is incoherent). The user confirmed treating the fourth bullet as forward-referencing the Booking Engine's runtime concept rather than inventing an undocumented status-change workflow.
+
+---
+
+## ID-023 — Service Inheritance Covers Both Creation Orders
+
+**Decision:**  
+A `BranchService` (status `Approved`, uncustomized, copied from the template's current defaults) is created in both directions:
+
+(a) When a Branch is created, for every current Active Service Template of the business.
+(b) When a Service Template is created (and set Active), for every existing Branch of the business.
+
+Both directions apply regardless of the Branch's own `approval_status`/`is_active` state. Neither direction requires Business Owner approval, since an unmodified inherited copy is not a "customization."
+
+**Reason:**  
+Resolved during Milestone 5 planning. Direction (a) is explicit — PRD §15.2 ("When a Branch is created: It automatically inherits every Service Template from the Business") and BR-030. Direction (b) is not stated as directly, but is supported by TAS Part 4 §5's Service Inheritance Engine being named a "synchronization" responsibility ("Maintains synchronization between Business Service Templates and Branch Services") with a workflow diagram sequenced "Business Owner creates Service Template → Branch inherits template." Applying regardless of Branch approval/active state follows from PRD §25.4, which explicitly permits "Services can be configured" while a Branch is Pending Approval, mirroring the Milestone 4 Resource-creation precedent. The user confirmed implementing direction (b) despite it resting on inference rather than a literal rule, given the Engine's own stated "synchronization" responsibility.
+
+---
+
+## ID-024 — `business_id` Denormalization on Service Template and Branch Service
+
+**Decision:**  
+`service_templates.business_id` (direct owner) and `branch_services.business_id` (denormalized from `branch.business_id` at creation, immutable thereafter) are added as columns, matching the pattern already established for `Resource` in ID-012.
+
+**Reason:**  
+Resolved during Milestone 5 planning. TAS's "Entities requiring business_id" list explicitly names both Service Template and Branch Service, but the TAS §8 column lists for both omit it — the same internal inconsistency ID-012 already resolved for Resource. Needed for tenant isolation and business-wide queries without a join through `branches` on every request.
+
+---
+
+## ID-025 — Service Template's Undefined Mandatory Fields Are Storage-Only
+
+**Decision:**  
+`ServiceTemplate.default_buffer_minutes` is a plain nullable integer. `ServiceTemplate.default_working_rules` is a nullable JSONB column with no defined internal structure, no enforcement, and no booking/availability logic built on it in Milestone 5. Both are exposed as opaque values through the Service Template create/read APIs. No `ServiceWorkingHours`-style table is introduced.
+
+**Reason:**  
+Resolved during Milestone 5 planning, mirroring ID-013's precedent for Resource. PRD §15.1 mandates "Default Buffer Time" and "Default Working Rules" as required Service Template fields, but TAS §8's Service Template column list has neither. Buffer Time is unambiguous (a number, enforcement is Milestone 7 scope like `Resource.booking_buffer_minutes`). Working Rules has no defined structure anywhere in either frozen document, unlike Default Resource Categories (clearly a category link) — so it is stored opaquely rather than inventing a schedule structure the documents never describe.
+
+---
+
+## ID-026 — Service Template Deactivation Does Not Cascade
+
+**Decision:**  
+Setting `ServiceTemplate.status = Inactive` only stops it from propagating/syncing to branches going forward (per ID-023). Branch Services already created from it are completely unaffected and keep their own independent status until a Business Owner or Branch Manager acts on them directly.
+
+**Reason:**  
+Resolved during Milestone 5 planning. No rule anywhere addresses what happens to already-inherited Branch Services when their source Template is later deactivated. Resolved consistently with the platform's established non-cascading precedent across independent lifecycle flags: ID-002 (Branch `approval_status`/`is_active`), ID-008 (`BusinessMember.status`/`User.is_active`), and ID-014 (`Resource.status`/linked `BusinessMember.status`).
+
+---
+
+## ID-027 — Service Management Authorization Matrix
+
+**Decision:**  
+Service Management authority in Milestone 5 is:
+
+- Business Owner: Service Template create + Active/Inactive toggle, business-wide; direct edit (`price`, `duration`, Resource Category assignment) of any Branch Service in their business, taking effect immediately with no approval step; decide (approve/reject) pending Branch Service overrides.
+- Branch Manager: submit Branch Service override proposals (`price`, `duration`, Resource Category assignment), restricted to their currently assigned branch only; cannot approve their own submissions.
+- HR User: no Service Management access of any kind.
+- Platform Administrator: no tenant Service-management operations.
+
+**Reason:**  
+Resolved during Milestone 5 planning, following the ID-016 format established for Resource Management. Business Owner authority follows PRD §10.2 ("Create business-level service templates," "Approve branch service overrides," full administrative control over every branch). Branch Manager scoping follows PRD §10.3 and §26.3 ("cannot... Modify another branch's services"); the inability to approve one's own submission is structural, since only the Business Owner path can decide (§10.3: "cannot approve their own service modifications"). HR exclusion follows from PRD §10.4 naming no Service Management responsibility for HR. Platform Administrator exclusion follows PRD §10.1's restriction against participating in tenant day-to-day operations.

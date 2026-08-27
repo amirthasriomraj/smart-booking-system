@@ -14,6 +14,9 @@ export default function Navbar() {
   const canManageResources =
     user?.business?.status === "Active" &&
     ["BUSINESS_OWNER", "BRANCH_MANAGER", "HR_USER"].includes(user?.business?.role_code)
+  const canManageServices =
+    user?.business?.status === "Active" &&
+    ["BUSINESS_OWNER", "BRANCH_MANAGER"].includes(user?.business?.role_code)
 
   const handleLogout = async () => {
 
@@ -63,6 +66,13 @@ export default function Navbar() {
         <>
           {" | "}
           <Link to="/business/resources">Resources</Link>
+        </>
+      )}
+
+      {canManageServices && (
+        <>
+          {" | "}
+          <Link to="/business/services">Services</Link>
         </>
       )}
 
