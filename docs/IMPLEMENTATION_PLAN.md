@@ -146,7 +146,9 @@ Scope:
 
 ## Milestone 6 — Customer Management & Customer Portal
 
-**Status: NEXT**
+**Status: COMPLETED**
+
+Implementation is already merged into `main`.
 
 Scope:
 
@@ -166,7 +168,7 @@ Customer self-registration and the customer-facing portal are mandatory V1 scope
 
 ## Milestone 7 — Booking Engine & Customer Booking Experience
 
-**Status: PLANNED**
+**Status: NEXT**
 
 Scope:
 
