@@ -311,4 +311,40 @@ export const decideServiceApproval = (approvalId, decision, comments) => {
   return api.post(`/service-approvals/${approvalId}/decide`, { decision, comments })
 }
 
+/*
+Customer Management helpers (Milestone 6)
+*/
+
+export const registerCustomer = (data) => {
+  return api.post("/customers/register", data)
+}
+
+export const getMyCustomerProfile = () => api.get("/customers/me")
+
+export const updateMyCustomerProfile = (data) => api.patch("/customers/me", data)
+
+export const listBusinessCustomers = (businessId, params = {}) => {
+  return api.get(`/businesses/${businessId}/customers`, { params })
+}
+
+export const createWalkInCustomer = (businessId, data) => {
+  return api.post(`/businesses/${businessId}/customers`, data)
+}
+
+export const getBusinessCustomer = (customerId) => api.get(`/business-customers/${customerId}`)
+
+export const updateBusinessCustomer = (customerId, data) => {
+  return api.patch(`/business-customers/${customerId}`, data)
+}
+
+export const setCustomerStatus = (customerId, status) => {
+  return api.patch(`/business-customers/${customerId}/status`, { status })
+}
+
+export const browseBusinesses = () => api.get("/customer/businesses")
+
+export const browseBranches = (businessId) => api.get(`/customer/businesses/${businessId}/branches`)
+
+export const browseServices = (branchId) => api.get(`/customer/branches/${branchId}/services`)
+
 export default api

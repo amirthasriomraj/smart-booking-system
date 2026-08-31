@@ -13,13 +13,14 @@ from schemas import (
     ResetPasswordRequest,
     UserContextResponse,
     BusinessContext,
+    CustomerContext,
 )
 from schemas_staff import AcceptInvitationStatusResponse, AcceptInvitationRequest
 import crud
 import crud_staff
 from auth import create_access_token, generate_csrf_token
 from dependencies import get_current_user, user_has_role
-from models import RefreshToken, BusinessMember, Business, Role, BranchAssignment, Branch
+from models import RefreshToken, BusinessMember, Business, Role, BranchAssignment, Branch, PlatformCustomer, UserProfile
 from services.email_service import send_password_reset_email
 from services.rate_limiter import rate_limit
 
@@ -282,12 +283,23 @@ def get_current_user_context(
             branch_name=branch_name,
         )
 
+    customer_context = None
+    platform_customer = db.query(PlatformCustomer).filter(PlatformCustomer.user_id == current_user.id).first()
+    if platform_customer:
+        profile = db.query(UserProfile).filter(UserProfile.user_id == current_user.id).first()
+        customer_context = CustomerContext(
+            platform_customer_id=platform_customer.id,
+            first_name=profile.first_name if profile else None,
+            last_name=profile.last_name if profile else None,
+        )
+
     return UserContextResponse(
         user_id=current_user.id,
         username=current_user.username,
         email=current_user.email,
         is_platform_admin=is_platform_admin,
         business=business_context,
+        customer=customer_context,
     )
 
 

@@ -41,12 +41,22 @@ class BusinessContext(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class CustomerContext(BaseModel):
+    """Milestone 6 — present when the user has a PlatformCustomer identity (ID-028)."""
+    platform_customer_id: int
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class UserContextResponse(BaseModel):
     user_id: int
     username: str
     email: EmailStr
     is_platform_admin: bool
     business: Optional[BusinessContext] = None
+    customer: Optional[CustomerContext] = None
 
 
 # -------------------------
