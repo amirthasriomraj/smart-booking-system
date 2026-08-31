@@ -12,6 +12,11 @@ import ResourceManagement from "./pages/ResourceManagement"
 import ServiceManagement from "./pages/ServiceManagement"
 import ResetPassword from "./pages/ResetPassword"
 import AcceptInvitation from "./pages/AcceptInvitation"
+import CustomerRegister from "./pages/CustomerRegister"
+import CustomerLogin from "./pages/CustomerLogin"
+import CustomerProfile from "./pages/CustomerProfile"
+import CustomerBrowse from "./pages/CustomerBrowse"
+import CustomerManagement from "./pages/CustomerManagement"
 
 import ProtectedRoute from "./components/ProtectedRoute"
 
@@ -30,6 +35,11 @@ function App() {
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/accept-invitation" element={<AcceptInvitation />} />
 
+        {/* Customer Portal — public routes (TAS Part 5 §3: a distinct
+            "Customer Booking Portal" route, separate from staff/admin Login) */}
+        <Route path="/customer/register" element={<CustomerRegister />} />
+        <Route path="/customer/login" element={<CustomerLogin />} />
+
         {/* Protected routes */}
         <Route element={<ProtectedRoute />}>
           <Route path="/dashboard" element={<Dashboard />} />
@@ -41,6 +51,16 @@ function App() {
               Branch Manager only — HR User and Platform Admin have no
               Service Management access (ID-027). */}
           <Route path="/business/services" element={<ServiceManagement />} />
+          {/* Role-gated inside the component itself: Business Owner and
+              Branch Manager, business-wide — Customer Management has no
+              branch scoping (ID-032). */}
+          <Route path="/business/customers" element={<CustomerManagement />} />
+        </Route>
+
+        {/* Customer Portal — protected routes (Milestone 6) */}
+        <Route element={<ProtectedRoute customerOnly={true} />}>
+          <Route path="/customer/profile" element={<CustomerProfile />} />
+          <Route path="/customer/browse" element={<CustomerBrowse />} />
         </Route>
 
         {/* Admin routes */}

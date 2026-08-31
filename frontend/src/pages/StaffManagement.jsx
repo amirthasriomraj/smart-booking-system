@@ -8,6 +8,7 @@ import {
   deactivateStaffMember,
   listBranchesForBusiness,
 } from "../api/api"
+import { extractErrorMessage } from "../api/errors"
 
 const emptyForm = {
   email: "",
@@ -56,7 +57,7 @@ export default function StaffManagement() {
       setMessage("Invitation sent.")
       loadStaff()
     } catch (err) {
-      setError(err.response?.data?.error?.message || "Failed to send invitation")
+      setError(extractErrorMessage(err, "Failed to send invitation"))
     }
   }
 

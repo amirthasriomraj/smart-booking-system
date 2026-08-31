@@ -18,6 +18,7 @@ import {
   resendResourceInvite,
   deactivateResourceUser,
 } from "../api/api"
+import { extractErrorMessage } from "../api/errors"
 
 const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
@@ -113,7 +114,7 @@ export default function ResourceManagement() {
       setCategoryForm(emptyCategoryForm)
       listResourceCategories(businessId).then((r) => setCategories(r.data))
     } catch (err) {
-      setError(err.response?.data?.error?.message || "Failed to create category")
+      setError(extractErrorMessage(err, "Failed to create category"))
     }
   }
 
@@ -136,7 +137,7 @@ export default function ResourceManagement() {
       setResourceForm(emptyResourceForm)
       loadResources()
     } catch (err) {
-      setError(err.response?.data?.error?.message || "Failed to create resource")
+      setError(extractErrorMessage(err, "Failed to create resource"))
     }
   }
 
@@ -158,7 +159,7 @@ export default function ResourceManagement() {
       cancelEditCategory()
       listResourceCategories(businessId).then((r) => setCategories(r.data))
     } catch (err) {
-      setError(err.response?.data?.error?.message || "Failed to update category")
+      setError(extractErrorMessage(err, "Failed to update category"))
     }
   }
 
@@ -194,7 +195,7 @@ export default function ResourceManagement() {
       cancelEditResource()
       loadResources()
     } catch (err) {
-      setError(err.response?.data?.error?.message || "Failed to update resource")
+      setError(extractErrorMessage(err, "Failed to update resource"))
     }
   }
 
@@ -204,7 +205,7 @@ export default function ResourceManagement() {
       await activateResource(resourceId)
       loadResources()
     } catch (err) {
-      setError(err.response?.data?.error?.message || "Failed to activate resource")
+      setError(extractErrorMessage(err, "Failed to activate resource"))
     }
   }
 
@@ -214,7 +215,7 @@ export default function ResourceManagement() {
       await suspendResource(resourceId)
       loadResources()
     } catch (err) {
-      setError(err.response?.data?.error?.message || "Failed to suspend resource")
+      setError(extractErrorMessage(err, "Failed to suspend resource"))
     }
   }
 
@@ -269,7 +270,7 @@ export default function ResourceManagement() {
       setMessage("Invitation sent.")
       loadResourceUsers()
     } catch (err) {
-      setError(err.response?.data?.error?.message || "Failed to invite resource user")
+      setError(extractErrorMessage(err, "Failed to invite resource user"))
     }
   }
 

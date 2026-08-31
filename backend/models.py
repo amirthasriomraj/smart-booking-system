@@ -56,6 +56,16 @@ class User(Base):
 
 
 class UserProfile(Base):
+    """
+    1:1 person profile for every User (staff and Customer alike).
+
+    Milestone 6 (ID-029) extends this table with the PRD §17.2 Customer
+    Personal/Contact/Address Information fields (gender, date_of_birth,
+    address_line, city, state, country_id, postal_code) — none of those
+    fields exist anywhere in the TAS §6 PlatformCustomer/BusinessCustomer
+    schema. Reusing this existing 1:1 table avoids a second
+    first_name/last_name field on PlatformCustomer.
+    """
     __tablename__ = "user_profiles"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -71,6 +81,15 @@ class UserProfile(Base):
 
     profile_image_url = Column(String, nullable=True)
     document_url = Column(String, nullable=True)
+
+    # Milestone 6 (ID-029)
+    gender = Column(String, nullable=True)
+    date_of_birth = Column(Date, nullable=True)
+    address_line = Column(String, nullable=True)
+    city = Column(String, nullable=True)
+    state = Column(String, nullable=True)
+    country_id = Column(Integer, ForeignKey("countries.id"), nullable=True)
+    postal_code = Column(String, nullable=True)
 
     user = relationship("User", back_populates="profile")
 
@@ -589,3 +608,75 @@ class ServiceApproval(Base):
     decided_at = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+# -------------------------
+# CUSTOMER MANAGEMENT (Milestone 6)
+# TAS Part 3 §6; PRD §17.1-17.6
+# -------------------------
+
+class PlatformCustomer(Base):
+    """
+    A Customer's platform identity (TAS Part 3 §6), 1:1 with User.
+
+    One PlatformCustomer may have many BusinessCustomer relationship rows —
+    one per business it has interacted with (ID-028: the TAS §6
+    PlatformCustomer/BusinessCustomer split is authoritative over PRD
+    §10.6/§11's contradictory "isolated per business" language, consistent
+    with BR-039). Personal/contact/address fields live on the linked User's
+    UserProfile (ID-029), not here — this table stays TAS-literal.
+    """
+    __tablename__ = "platform_customers"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+
+    preferred_language = Column(String, nullable=True)
+    preferred_timezone = Column(String, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class BusinessCustomer(Base):
+    """
+    The relationship between a PlatformCustomer and a specific Business
+    (TAS Part 3 §6).
+
+    `platform_customer_id` is NOT NULL — every Customer, including a
+    staff-created walk-in with no immediate login, always has a backing
+    PlatformCustomer/User, created via the ID-005 placeholder-credential
+    mechanism when no existing identity is reused (ID-030, ID-031).
+
+    `customer_number` is system-generated as `CUST-{id:06d}` via the
+    existing flush-then-read-PK pattern (ID-033), not a per-business
+    sequence. `status` (Active/Inactive/Archived-future, PRD §17.3) is
+    per-business only; the linked User's `is_active` remains the
+    independent platform-account-lock flag (ID-002/ID-008 precedent).
+
+    No branch_id: Customer is a business-scoped entity, not branch-scoped
+    (ID-032) — both Business Owner and Branch Manager get business-wide
+    Customer Management authority.
+    """
+    __tablename__ = "business_customers"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    business_id = Column(Integer, ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False, index=True)
+    platform_customer_id = Column(
+        Integer, ForeignKey("platform_customers.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+    customer_number = Column(String, nullable=False)
+    notes = Column(Text, nullable=True)
+    status = Column(String, nullable=False, default="Active", index=True)
+
+    first_visit_at = Column(DateTime, nullable=True)
+    last_visit_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("business_id", "platform_customer_id", name="uq_business_customer_business_platform_customer"),
+        UniqueConstraint("business_id", "customer_number", name="uq_business_customer_business_customer_number"),
+    )

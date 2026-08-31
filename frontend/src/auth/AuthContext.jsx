@@ -14,7 +14,14 @@ function getCookie(name) {
 }
 
 export function AuthProvider({ children }) {
-  const publicRoutes = ["/login", "/register", "/reset-password", "/accept-invitation"]
+  const publicRoutes = [
+    "/login",
+    "/register",
+    "/reset-password",
+    "/accept-invitation",
+    "/customer/login",
+    "/customer/register",
+  ]
   const currentPath = window.location.pathname
 
   const shouldSkipAuth = publicRoutes.includes(currentPath)

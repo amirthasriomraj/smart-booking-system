@@ -17,6 +17,10 @@ export default function Navbar() {
   const canManageServices =
     user?.business?.status === "Active" &&
     ["BUSINESS_OWNER", "BRANCH_MANAGER"].includes(user?.business?.role_code)
+  const canManageCustomers =
+    user?.business?.status === "Active" &&
+    ["BUSINESS_OWNER", "BRANCH_MANAGER"].includes(user?.business?.role_code)
+  const isCustomer = !!user?.customer
 
   const handleLogout = async () => {
 
@@ -32,7 +36,9 @@ export default function Navbar() {
 
     logout()
 
-    navigate("/login")
+    // Customers have their own public login page; every other role uses
+    // the staff/admin one — preserved exactly as before for all of them.
+    navigate(isCustomer ? "/customer/login" : "/login")
 
   }
 
@@ -73,6 +79,22 @@ export default function Navbar() {
         <>
           {" | "}
           <Link to="/business/services">Services</Link>
+        </>
+      )}
+
+      {canManageCustomers && (
+        <>
+          {" | "}
+          <Link to="/business/customers">Customers</Link>
+        </>
+      )}
+
+      {isCustomer && (
+        <>
+          {" | "}
+          <Link to="/customer/profile">My Profile</Link>
+          {" | "}
+          <Link to="/customer/browse">Browse</Link>
         </>
       )}
 

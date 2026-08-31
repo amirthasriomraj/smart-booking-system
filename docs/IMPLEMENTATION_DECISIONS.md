@@ -398,3 +398,77 @@ Service Management authority in Milestone 5 is:
 
 **Reason:**  
 Resolved during Milestone 5 planning, following the ID-016 format established for Resource Management. Business Owner authority follows PRD §10.2 ("Create business-level service templates," "Approve branch service overrides," full administrative control over every branch). Branch Manager scoping follows PRD §10.3 and §26.3 ("cannot... Modify another branch's services"); the inability to approve one's own submission is structural, since only the Business Owner path can decide (§10.3: "cannot approve their own service modifications"). HR exclusion follows from PRD §10.4 naming no Service Management responsibility for HR. Platform Administrator exclusion follows PRD §10.1's restriction against participating in tenant day-to-day operations.
+
+---
+
+## ID-028 — Cross-Business Platform Customer Identity
+
+**Decision:**  
+The Customer model follows TAS §6's `PlatformCustomer`/`BusinessCustomer` split: one `PlatformCustomer` (platform identity, linked 1:1 to a `User`) may have multiple `BusinessCustomer` relationship records, one per business it has interacted with. A single Customer account may authenticate once and interact with multiple, independent businesses, consistent with BR-039.
+
+PRD §10.6/§11's "Customer accounts are isolated per business... Version 1 does not include a global customer identity shared across businesses" is treated as superseded, less-precise narrative language, resolved in favor of TAS §6's explicit column-level schema, BR-039's formally numbered rule, and `IMPLEMENTATION_PLAN.md`'s own Milestone 6 scope line, which names the Platform/Business Customer model directly.
+
+**Reason:**  
+Resolved during Milestone 6 planning to remove a direct contradiction between §10.6/§11 and §17.4/BR-039/TAS §6. The later, more specific and detailed sources were preferred over the earlier summary language, consistent with how prior milestones resolved internal PRD/TAS gaps (e.g. ID-012, ID-018).
+
+---
+
+## ID-029 — Customer Personal Profile Fields Live on `UserProfile`
+
+**Decision:**  
+PRD §17.2's Personal Information (First Name, Last Name, Gender, Date of Birth), Contact Information (Mobile Number, Email), and Address Information (Address Line, City, State, Country, Postal Code) fields are not represented anywhere in TAS §6's `PlatformCustomer`/`BusinessCustomer` schema. These fields are added as new nullable columns (`gender`, `date_of_birth`, `address_line`, `city`, `state`, `country_id`, `postal_code`) on the existing `UserProfile` table, which already holds `first_name`/`last_name`/`phone` for every `User` (previously staff-only). `PlatformCustomer` remains TAS-literal (`user_id`, `preferred_language`, `preferred_timezone`, `created_at`) and does not duplicate identity fields.
+
+**Reason:**  
+Resolved during Milestone 6 planning. `UserProfile` already exists as the 1:1 "person profile" table keyed by `user_id`; extending it with nullable, additive columns avoids inventing a second first/last-name field on `PlatformCustomer` and follows CLAUDE.md's reuse-existing-patterns guidance. Putting the fields on `BusinessCustomer` instead was rejected because it would duplicate personal data per business relationship, contradicting TAS §6's own "while keeping one platform login" framing.
+
+---
+
+## ID-030 — Every Customer, Including Walk-Ins, Has a Backing User/PlatformCustomer
+
+**Decision:**  
+Every `BusinessCustomer` row always references a `PlatformCustomer` (`platform_customer_id` is `NOT NULL`); there is no "login-less" Customer record. For a staff-created walk-in customer with no existing platform identity, a `User` row is created using the same mechanical placeholder mechanism already established for staff invitations (ID-005): a randomly generated, never-disclosed placeholder username (`secrets.token_hex(8)`-based) and an unusable random password hash. These placeholders are overwritten only if the person later sets real credentials (e.g. via self-registration reuse, ID-031).
+
+**Reason:**  
+Resolved during Milestone 6 planning, directly extending the already-approved ID-005 precedent to a new actor type rather than inventing an undefined "claim account later" linking workflow. This is also what makes BR-039's cross-business account portability work uniformly regardless of whether the first business relationship originated from self-registration or staff creation.
+
+---
+
+## ID-031 — Customer Identity Reuse and Collision Rules
+
+**Decision:**  
+- **Walk-in creation:** if the supplied email matches an existing `User`, that `User`/`PlatformCustomer` is reused as-is (mirroring ID-007) and only a new `BusinessCustomer` row is created for the current business. If no email is supplied, a new placeholder identity (ID-030) is always created — mobile number is never used as an identity-matching key, since it is not a documented identity field and is not guaranteed unique.
+- **Self-registration:** if the supplied email matches an existing **placeholder** `User` (one created via walk-in creation and never claimed), that row's username/password are overwritten with the newly supplied real credentials in place (mirroring ID-005's "placeholders overwritten only when accepted" language), rather than the registration failing on a unique-email conflict. If the email matches an existing **non-placeholder** (already-claimed) account, registration fails normally (409).
+- `BusinessCustomer` carries `UniqueConstraint(business_id, platform_customer_id)`, mirroring `business_members`' existing `UniqueConstraint(business_id, user_id)`.
+
+**Reason:**  
+Resolved during Milestone 6 planning. No PRD/TAS text defines customer email/mobile uniqueness or reuse rules at all (confirmed absent by repo-wide search of the frozen documents). This decision is the minimal extension of the already-approved ID-005/ID-007 staff-identity precedent to the Customer actor type, avoiding any new, undocumented mechanism.
+
+---
+
+## ID-032 — Customer Management Is Business-Scoped, Not Branch-Scoped
+
+**Decision:**  
+`BusinessCustomer` carries no `branch_id` and no branch-ownership concept. Both Business Owner and Branch Manager have business-wide Customer Management authority (list/search/create/edit/status) across the entire business, not restricted to a single branch. PRD §26.3's "cannot... View another branch's customers" is read as forward-referencing the booking-level branch attribution that will exist once Booking (Milestone 7) links Customer↔Branch, not as a Milestone 6 Customer-record restriction — consistent with PRD §17.1's explicit framing of Customer as a *business*-specific entity, and with §10.3's own unqualified Permissions wording ("Create Customers. Edit Customers.") over its looser Responsibilities phrasing ("branch customers").
+
+**Reason:**  
+Resolved during Milestone 6 planning. TAS §6's `BusinessCustomer` schema has no branch column, so a branch-restricted reading would require inventing both a new denormalized field and its visibility semantics — a mechanism no PRD/TAS text defines. The business-scoped reading requires no invented schema and matches the literal TAS Customer model exactly.
+
+---
+
+## ID-033 — `customer_number` Generation
+
+**Decision:**  
+`BusinessCustomer.customer_number` is system-generated at creation as `f"CUST-{business_customer.id:06d}"`, obtained via `db.flush()` to read the row's DB-assigned auto-increment `id` before commit — the same flush-then-read-PK pattern already used elsewhere in the codebase (`crud_business.py`, `crud_resource.py`, `crud_service.py`, `crud_branch.py`). `UniqueConstraint(business_id, customer_number)` is added as a DB-level safety net; because `id` is a global auto-increment, the generated value is in practice globally unique, a strictly stronger guarantee than the required per-business uniqueness.
+
+**Reason:**  
+Resolved during Milestone 6 planning. TAS §6 lists `customer_number` as a column with no generation or format rule, and no existing project convention for generated human-readable codes exists (`Resource.code`, the closest analog, is a plain optional user-supplied field with no generation logic). A sequential-per-business counter was considered and rejected because it would require either a race-prone `SELECT MAX+1` or a new sequence-tracking table/column — an invented stateful mechanism the frozen documents don't call for. Reusing the existing flush-then-read-PK idiom is collision-safe by construction and introduces no new mechanism.
+
+---
+
+## ID-034 — Customer Self-Registration Uses a Dedicated Endpoint
+
+**Decision:**  
+Customer self-registration is implemented as a new `POST /customers/register` endpoint, creating `User` + `UserProfile` + `UserRole(CUSTOMER)` + `PlatformCustomer` in one transaction, with fields matching PRD §17.5 (First Name, Last Name, Email, Mobile, Password). The existing legacy `POST /auth/register` (pre-refactor flat-model endpoint, creating a bare `User(role="user")` with no profile/role/tenant linkage) is left completely unchanged.
+
+**Reason:**  
+Resolved during Milestone 6 planning. `/auth/register` is still actively exercised by existing regression tests (`test_bookings.py`, `test_password_reset.py`, `test_auth.py`, `test_staff.py`) and produces a different, non-tenant-aware `User` shape than what PRD §17.5 requires for Customer registration; repurposing it in place would risk breaking existing passing tests, violating CLAUDE.md's "preserve existing working functionality" rule. A new dedicated endpoint has no such risk.

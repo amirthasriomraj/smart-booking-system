@@ -14,6 +14,7 @@ import {
   listServiceApprovals,
   decideServiceApproval,
 } from "../api/api"
+import { extractErrorMessage } from "../api/errors"
 
 const emptyTemplateForm = {
   name: "",
@@ -142,7 +143,7 @@ export default function ServiceManagement() {
       loadBranchServices()
       setMessage("Service Template created — inherited by every branch.")
     } catch (err) {
-      setError(err.response?.data?.error?.message || "Failed to create Service Template")
+      setError(extractErrorMessage(err, "Failed to create Service Template"))
     }
   }
 
@@ -187,7 +188,7 @@ export default function ServiceManagement() {
       loadBranchServices()
       setMessage("Service updated.")
     } catch (err) {
-      setError(err.response?.data?.error?.message || "Failed to update service")
+      setError(extractErrorMessage(err, "Failed to update service"))
     }
   }
 
@@ -219,7 +220,7 @@ export default function ServiceManagement() {
       loadApprovals()
       setMessage("Override submitted — pending Business Owner approval.")
     } catch (err) {
-      setError(err.response?.data?.error?.message || "Failed to submit override")
+      setError(extractErrorMessage(err, "Failed to submit override"))
     }
   }
 
@@ -231,7 +232,7 @@ export default function ServiceManagement() {
       loadBranchServices()
       setMessage(`Override ${decision.toLowerCase()}.`)
     } catch (err) {
-      setError(err.response?.data?.error?.message || "Failed to decide on override")
+      setError(extractErrorMessage(err, "Failed to decide on override"))
     }
   }
 
