@@ -125,7 +125,9 @@ Do not implement future resource-capacity booking functionality.
 
 ## Milestone 5 — Service Management
 
-**Status: NEXT**
+**Status: COMPLETED**
+
+Implementation is already merged into `main`.
 
 Refer to `IMPLEMENTATION_DECISIONS.md` for approved post-freeze Service Management clarifications (ID-018–ID-027).
 
@@ -144,7 +146,7 @@ Scope:
 
 ## Milestone 6 — Customer Management & Customer Portal
 
-**Status: PLANNED**
+**Status: NEXT**
 
 Scope:
 
