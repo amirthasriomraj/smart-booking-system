@@ -416,11 +416,13 @@ def get_branch_service(db: Session, branch_service_id: int, current_user: User) 
 
 
 def serialize_branch_service(db: Session, branch_service: BranchService) -> dict:
+    template = db.query(ServiceTemplate).filter(ServiceTemplate.id == branch_service.service_template_id).first()
     return {
         "id": branch_service.id,
         "branch_id": branch_service.branch_id,
         "business_id": branch_service.business_id,
         "service_template_id": branch_service.service_template_id,
+        "service_name": template.name if template else None,
         "duration": branch_service.duration,
         "price": branch_service.price,
         "resource_category_ids": _get_branch_service_resource_category_ids(db, branch_service.id),

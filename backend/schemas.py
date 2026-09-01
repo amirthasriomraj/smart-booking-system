@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr, ConfigDict
 from typing import Optional
-from datetime import datetime, date as DateType, time as TimeType
+from datetime import datetime
 
 
 # -------------------------
@@ -81,38 +81,8 @@ class UserProfileResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-# -------------------------
-# BOOKING SCHEMAS
-# -------------------------
-
-class BookingCreate(BaseModel):
-    date: DateType
-    time: TimeType
-
-    model_config = ConfigDict(extra="forbid")
-
-
-class BookingUpdate(BaseModel):
-    date: Optional[DateType] = None
-    time: Optional[TimeType] = None
-
-    model_config = ConfigDict(extra="forbid")
-
-
-class BookingResponse(BaseModel):
-    id: int
-    date: DateType
-    time: TimeType
-    user_id: int
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class PaginatedBookings(BaseModel):
-    total: int
-    limit: int
-    offset: int
-    data: list[BookingResponse]
+# NOTE: legacy flat Booking schemas removed — see schemas_booking.py
+# (Milestone 7, IMPLEMENTATION_PLAN.md M7 scope bullet 1).
 
 
 # -------------------------

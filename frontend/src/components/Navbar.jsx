@@ -20,6 +20,9 @@ export default function Navbar() {
   const canManageCustomers =
     user?.business?.status === "Active" &&
     ["BUSINESS_OWNER", "BRANCH_MANAGER"].includes(user?.business?.role_code)
+  const canManageBookings =
+    user?.business?.status === "Active" &&
+    ["BUSINESS_OWNER", "BRANCH_MANAGER"].includes(user?.business?.role_code)
   const isCustomer = !!user?.customer
 
   const handleLogout = async () => {
@@ -89,12 +92,21 @@ export default function Navbar() {
         </>
       )}
 
+      {canManageBookings && (
+        <>
+          {" | "}
+          <Link to="/business/bookings">Bookings</Link>
+        </>
+      )}
+
       {isCustomer && (
         <>
           {" | "}
           <Link to="/customer/profile">My Profile</Link>
           {" | "}
           <Link to="/customer/browse">Browse</Link>
+          {" | "}
+          <Link to="/customer/bookings">My Bookings</Link>
         </>
       )}
 

@@ -1,6 +1,6 @@
 import React from "react"
 import { useState, useContext } from "react"
-import { useNavigate } from "react-router-dom"
+import { useNavigate, Link } from "react-router-dom"
 import api from "../api/api"
 import { AuthContext } from "../auth/AuthContextOnly"
 
@@ -74,6 +74,10 @@ export default function Login() {
         </button>
 
       </form>
+
+      <p>
+        New business? <Link to="/register">Register your business</Link>
+      </p>
 
     </div>
   )

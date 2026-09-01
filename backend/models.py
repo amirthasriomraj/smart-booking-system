@@ -94,20 +94,12 @@ class UserProfile(Base):
     user = relationship("User", back_populates="profile")
 
 
-class Booking(Base):
-    __tablename__ = "bookings"
-
-    id = Column(Integer, primary_key=True, index=True)
-
-    date = Column(Date, nullable=False, index=True)
-    time = Column(Time, nullable=False)
-
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-
-    __table_args__ = (
-        UniqueConstraint("date", "time", name="unique_booking_slot"),
-        Index("idx_booking_user_date", "user_id", "date"),
-    )
+# NOTE: the pre-Milestone-7 flat `Booking` model (date/time/user_id only,
+# no business/branch/service/resource linkage, admin hard-delete endpoint)
+# is replaced below by the Milestone 7 Booking Engine schema
+# (IMPLEMENTATION_PLAN.md M7 scope bullet 1: "Replace/generalize the legacy
+# booking structure as required by V1"). See the Milestone 7 section further
+# down this file for the new `Booking` / `BookingHistory` models.
 
 
 class RefreshToken(Base):
@@ -680,3 +672,95 @@ class BusinessCustomer(Base):
         UniqueConstraint("business_id", "platform_customer_id", name="uq_business_customer_business_platform_customer"),
         UniqueConstraint("business_id", "customer_number", name="uq_business_customer_business_customer_number"),
     )
+
+
+# -------------------------
+# BOOKING MANAGEMENT (Milestone 7)
+# TAS Part 3 §9; PRD §16, §18-24
+# -------------------------
+
+class Booking(Base):
+    """
+    Core transactional booking record (TAS Part 3 §9; PRD §18.2).
+
+    Every Booking belongs to exactly one Business, Branch, Customer, Service
+    (BranchService — the branch-specific, currently-effective implementation
+    of a Service Template, not the template itself) and Resource (BR-042).
+    `status` is a 3-value V1 lifecycle: Confirmed / Completed / Cancelled
+    (PRD §18.5) — bookings are never deleted (BR-045).
+
+    `cancellation_reason` / `completed_at` are not in the TAS §9 column list
+    (ID-036): the former holds PRD §20's optional cancellation reason, the
+    latter PRD §18.7's completion timestamp.
+
+    The `(resource_id, booking_date, start_time)` uniqueness is the TAS §9
+    constraint, kept as a defense-in-depth backstop — but as a *partial*
+    unique index excluding Cancelled rows, since a cancelled booking
+    releases the resource (PRD §20) and must not permanently block that
+    slot from being rebooked. True overlap detection (covering differing
+    booking durations and `Resource.booking_buffer_minutes` padding) is
+    enforced in `crud_booking.py` application logic, not by this index
+    alone (ID-037).
+    """
+    __tablename__ = "bookings"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    business_id = Column(Integer, ForeignKey("businesses.id"), nullable=False, index=True)
+    branch_id = Column(Integer, ForeignKey("branches.id"), nullable=False, index=True)
+    customer_id = Column(Integer, ForeignKey("business_customers.id"), nullable=False, index=True)
+    branch_service_id = Column(Integer, ForeignKey("branch_services.id"), nullable=False, index=True)
+    resource_id = Column(Integer, ForeignKey("resources.id"), nullable=False, index=True)
+
+    booking_date = Column(Date, nullable=False, index=True)
+    start_time = Column(Time, nullable=False)
+    end_time = Column(Time, nullable=False)
+
+    status = Column(String, nullable=False, default="Confirmed", index=True)  # Confirmed / Completed / Cancelled
+    cancellation_reason = Column(Text, nullable=True)  # ID-036
+    completed_at = Column(DateTime, nullable=True)  # ID-036
+
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        # Partial index, not a plain UniqueConstraint: a Cancelled booking
+        # releases the resource (PRD §20) and must not permanently block its
+        # exact resource/date/start_time from being rebooked, even though
+        # the row itself is never deleted (BR-045). Mirrors the
+        # BranchAssignment partial-index pattern above.
+        Index(
+            "uq_booking_resource_date_start_time",
+            "resource_id", "booking_date", "start_time",
+            unique=True,
+            postgresql_where=text("status != 'Cancelled'"),
+            sqlite_where=text("status != 'Cancelled'"),
+        ),
+    )
+
+
+class BookingHistory(Base):
+    """
+    Immutable Booking history (TAS Part 3 §9; PRD §22). No update or delete
+    path is exposed anywhere in the application, same as `AuditLog`.
+
+    `previous_state` / `new_state` are structured JSONB snapshots (e.g.
+    `{booking_date, start_time, end_time, resource_id, status}`), mirroring
+    `ServiceApproval`'s existing snapshot pattern, so a single reschedule
+    entry can show both the date and resource change together in one record
+    (PRD §19.3's worked example shows exactly this).
+    """
+    __tablename__ = "booking_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    booking_id = Column(Integer, ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    action = Column(String, nullable=False)  # Created / Rescheduled / ResourceReassigned / Cancelled / Completed
+    previous_state = Column(JSONVariant, nullable=True)
+    new_state = Column(JSONVariant, nullable=True)
+
+    performed_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    performed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
