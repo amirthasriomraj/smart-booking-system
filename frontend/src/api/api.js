@@ -94,28 +94,18 @@ api.interceptors.response.use(
 )
 
 /*
-Booking helpers
-*/
-
-export const getBookings = (limit = 10, offset = 0, sort = "date") => {
-  return api.get("/bookings", {
-    params: { limit, offset, sort }
-  })
-}
-
-export const createBooking = (data) => {
-  return api.post("/bookings", data)
-}
-
-export const deleteBooking = (bookingId) => {
-  return api.delete(`/bookings/${bookingId}`)
-}
-
-/*
 Current user context (Milestone 2)
 */
 
 export const getMe = () => api.get("/auth/me")
+
+/*
+Business Owner registration (public)
+*/
+
+export const listBusinessCategories = () => api.get("/businesses/categories")
+
+export const registerBusiness = (data) => api.post("/businesses/register", data)
 
 /*
 Business helpers (Platform Admin)
@@ -346,5 +336,68 @@ export const browseBusinesses = () => api.get("/customer/businesses")
 export const browseBranches = (businessId) => api.get(`/customer/businesses/${businessId}/branches`)
 
 export const browseServices = (branchId) => api.get(`/customer/branches/${branchId}/services`)
+
+/*
+Booking helpers (Milestone 7)
+*/
+
+// Availability Engine — staff-facing
+export const getBranchAvailability = (branchId, branchServiceId, date, resourceId) => {
+  return api.get(`/branches/${branchId}/availability`, {
+    params: { branch_service_id: branchServiceId, date, resource_id: resourceId || undefined }
+  })
+}
+
+// Staff booking management
+export const createStaffBooking = (branchId, data) => {
+  return api.post(`/branches/${branchId}/bookings`, data)
+}
+
+export const listBranchBookings = (branchId, params = {}) => {
+  return api.get(`/branches/${branchId}/bookings`, { params })
+}
+
+export const listBusinessBookings = (businessId, params = {}) => {
+  return api.get(`/businesses/${businessId}/bookings`, { params })
+}
+
+export const getBooking = (bookingId) => api.get(`/bookings/${bookingId}`)
+
+export const getBookingHistory = (bookingId) => api.get(`/bookings/${bookingId}/history`)
+
+export const rescheduleBooking = (bookingId, data) => {
+  return api.post(`/bookings/${bookingId}/reschedule`, data)
+}
+
+export const cancelBooking = (bookingId, reason) => {
+  return api.post(`/bookings/${bookingId}/cancel`, { reason })
+}
+
+export const reassignBookingResource = (bookingId, resourceId) => {
+  return api.post(`/bookings/${bookingId}/reassign-resource`, { resource_id: resourceId })
+}
+
+export const completeBooking = (bookingId) => api.post(`/bookings/${bookingId}/complete`)
+
+// Customer self-service
+export const getCustomerBranchAvailability = (branchId, branchServiceId, date, resourceId) => {
+  return api.get(`/customer/branches/${branchId}/availability`, {
+    params: { branch_service_id: branchServiceId, date, resource_id: resourceId || undefined }
+  })
+}
+
+export const createCustomerBooking = (data) => api.post("/customer/bookings", data)
+
+export const listCustomerBookings = () => api.get("/customer/bookings")
+
+export const getCustomerBooking = (bookingId) => api.get(`/customer/bookings/${bookingId}`)
+
+export const rescheduleCustomerBooking = (bookingId, data) => {
+  return api.post(`/customer/bookings/${bookingId}/reschedule`, data)
+}
+
+export const cancelCustomerBooking = (bookingId, reason) => {
+  return api.post(`/customer/bookings/${bookingId}/cancel`, { reason })
+}
 
 export default api

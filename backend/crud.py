@@ -4,7 +4,7 @@ from sqlalchemy import desc
 
 from fastapi import HTTPException
 
-from models import User, Booking, UserProfile, RefreshToken
+from models import User, Booking, UserProfile, RefreshToken, PlatformCustomer, BusinessCustomer
 from auth import hash_password, verify_password, validate_password, generate_refresh_token, hash_refresh_token
 
 import secrets
@@ -122,84 +122,11 @@ def update_user_profile(db: Session, user_id: int, profile_data):
     return profile
 
 
-# -------------------------
-# BOOKING CRUD
-# -------------------------
-
-def create_booking(db: Session, booking_data, current_user):
-    booking = Booking(
-        date=booking_data.date,
-        time=booking_data.time,
-        user_id=current_user.id
-    )
-
-    db.add(booking)
-    db.commit()
-    db.refresh(booking)
-
-    return booking
-
-
-def get_booking_by_id(db: Session, booking_id: int):
-    return db.query(Booking).filter(Booking.id == booking_id).first()
-
-
-def get_all_bookings(db, current_user, limit: int, offset: int, sort: str):
-
-    query = db.query(Booking)
-
-    if current_user.role != "admin":
-        query = query.filter(Booking.user_id == current_user.id)
-
-    total = query.count()
-
-    if sort.startswith("-"):
-        field = sort[1:]
-        query = query.order_by(desc(getattr(Booking, field)))
-    else:
-        query = query.order_by(getattr(Booking, sort))
-
-    bookings = query.limit(limit).offset(offset).all()
-
-    return {
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-        "data": bookings
-    }
-
-
-def update_booking(db: Session, booking_id: int, booking_data, current_user):
-    booking = get_booking_by_id(db, booking_id)
-
-    if not booking:
-        raise HTTPException(status_code=404, detail="Booking not found")
-
-    if current_user.role != "admin" and booking.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized")
-
-    if booking_data.date is not None:
-        booking.date = booking_data.date
-
-    if booking_data.time is not None:
-        booking.time = booking_data.time
-
-    db.commit()
-    db.refresh(booking)
-
-    return booking
-
-
-def delete_booking(db: Session, booking_id: int):
-    booking = get_booking_by_id(db, booking_id)
-
-    if not booking:
-        raise HTTPException(status_code=404, detail="Booking not found")
-
-    db.delete(booking)
-    db.commit()
-
-    return {"detail": "Booking deleted"}
+# NOTE: the legacy flat-model booking CRUD (create/get/list/update/delete
+# against the pre-Milestone-7 `Booking(date, time, user_id)` shape) has been
+# removed. Milestone 7 replaces it with `crud_booking.py`, operating on the
+# new tenant-aware `Booking` model (see models.py and IMPLEMENTATION_PLAN.md
+# M7 scope bullet 1).
 
 
 # -------------------------
@@ -216,8 +143,17 @@ def delete_user(db: Session, user_id: int):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Check bookings
-    bookings_exist = db.query(Booking).filter(Booking.user_id == user_id).first()
+    # Check bookings (Milestone 7: Booking no longer has a direct user_id
+    # column — a user can be attached to a booking either as the staff
+    # member who created it, or, via PlatformCustomer -> BusinessCustomer,
+    # as the customer it was booked for).
+    bookings_exist = (
+        db.query(Booking.id)
+        .outerjoin(BusinessCustomer, Booking.customer_id == BusinessCustomer.id)
+        .outerjoin(PlatformCustomer, BusinessCustomer.platform_customer_id == PlatformCustomer.id)
+        .filter(or_(Booking.created_by == user_id, PlatformCustomer.user_id == user_id))
+        .first()
+    )
 
     if bookings_exist:
         raise HTTPException(

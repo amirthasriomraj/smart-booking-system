@@ -66,6 +66,7 @@ class BranchServiceResponse(BaseModel):
     branch_id: int
     business_id: int
     service_template_id: int
+    service_name: Optional[str] = None
     duration: int
     price: Decimal
     resource_category_ids: List[int] = []

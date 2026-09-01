@@ -51,7 +51,10 @@ def test_login_user():
 
 
 def test_access_protected_route_without_token():
-    response = client.get("/api/v1/bookings")
+    # /api/v1/bookings was the legacy example protected route; the Milestone 7
+    # Booking Engine replaced it with tenant/branch-scoped booking paths (no bare
+    # collection endpoint), so /auth/me stands in as "any protected route" here.
+    response = client.get("/api/v1/auth/me")
 
     assert response.status_code == 401
 
@@ -80,7 +83,7 @@ def test_access_protected_route_with_token():
 
     # Access protected route
     response = client.get(
-        "/api/v1/bookings",
+        "/api/v1/auth/me",
         headers={"Authorization": f"Bearer {access_token}"}
     )
 

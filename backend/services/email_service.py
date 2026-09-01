@@ -87,6 +87,103 @@ Your proposed change to "{service_name}" at {branch_name} has been {decision.low
         server.send_message(msg)
 
 
+def send_booking_confirmation_email(email: str, business_name: str, branch_name: str, service_name: str, booking_date, start_time):
+    """Notifies the customer their booking is confirmed (PRD §18.6, §23, §37.2)."""
+
+    msg = EmailMessage()
+    msg["Subject"] = f"Booking confirmed — {business_name}"
+    msg["From"] = settings.EMAIL_FROM
+    msg["To"] = email
+
+    msg.set_content(
+        f"""
+Hello,
+
+Your booking for "{service_name}" at {branch_name} ({business_name}) is confirmed.
+
+Date: {booking_date}
+Time: {start_time}
+"""
+    )
+
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        server.starttls()
+        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.send_message(msg)
+
+
+def send_booking_rescheduled_email(email: str, business_name: str, branch_name: str, service_name: str, booking_date, start_time):
+    """Notifies the customer their booking has been rescheduled (PRD §19.3, §23, §37.2)."""
+
+    msg = EmailMessage()
+    msg["Subject"] = f"Booking rescheduled — {business_name}"
+    msg["From"] = settings.EMAIL_FROM
+    msg["To"] = email
+
+    msg.set_content(
+        f"""
+Hello,
+
+Your booking for "{service_name}" at {branch_name} ({business_name}) has been rescheduled.
+
+New date: {booking_date}
+New time: {start_time}
+"""
+    )
+
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        server.starttls()
+        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.send_message(msg)
+
+
+def send_booking_cancelled_email(email: str, business_name: str, branch_name: str, service_name: str, booking_date, start_time, reason: str = None):
+    """Notifies the customer their booking has been cancelled (PRD §20, §23, §37.2)."""
+
+    msg = EmailMessage()
+    msg["Subject"] = f"Booking cancelled — {business_name}"
+    msg["From"] = settings.EMAIL_FROM
+    msg["To"] = email
+
+    reason_line = f"\nReason: {reason}\n" if reason else ""
+
+    msg.set_content(
+        f"""
+Hello,
+
+Your booking for "{service_name}" at {branch_name} ({business_name}), scheduled for {booking_date} {start_time}, has been cancelled.
+{reason_line}
+"""
+    )
+
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        server.starttls()
+        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.send_message(msg)
+
+
+def send_booking_completed_email(email: str, business_name: str, branch_name: str, service_name: str, booking_date, start_time):
+    """Notifies the customer their booking has been marked completed (PRD §18.7, §23, §37.2)."""
+
+    msg = EmailMessage()
+    msg["Subject"] = f"Booking completed — {business_name}"
+    msg["From"] = settings.EMAIL_FROM
+    msg["To"] = email
+
+    msg.set_content(
+        f"""
+Hello,
+
+Your booking for "{service_name}" at {branch_name} ({business_name}) on {booking_date} {start_time} has been marked completed. Thank you for visiting!
+"""
+    )
+
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        server.starttls()
+        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.send_message(msg)
+
+
 def send_staff_invitation_email(email: str, token: str, role_code: str, business_name: str):
 
     accept_link = f"{settings.FRONTEND_BASE_URL}/accept-invitation?token={token}"
