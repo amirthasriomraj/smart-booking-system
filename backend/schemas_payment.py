@@ -3,6 +3,8 @@ from typing import Optional, Any
 from datetime import date as DateType, time as TimeType, datetime
 from decimal import Decimal
 
+from schemas_booking import BookingResponse
+
 
 class CustomerCheckoutRequest(BaseModel):
     branch_service_id: int
@@ -79,3 +81,15 @@ class BalancePaymentInitiateResponse(BaseModel):
     razorpay_key_id: str
     amount_due: Decimal
     currency: str
+
+
+class BookingActionResponse(BookingResponse):
+    """Cancellation/reschedule response. Extends `BookingResponse` (the
+    booking's own fields stay top-level, exactly as the pre-Milestone-8
+    cancel/reschedule endpoints already returned them, for backward
+    compatibility) with whatever financial consequence resulted (refund
+    calculation/override, or a reschedule price-difference collect/refund)
+    — both `None` for actions with no financial effect (e.g. a Reserve
+    Without Payment booking, or a reschedule with no price change)."""
+    refund: Optional[dict] = None
+    price_adjustment: Optional[dict] = None

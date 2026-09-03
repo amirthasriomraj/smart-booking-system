@@ -1,6 +1,7 @@
 from pydantic import BaseModel, ConfigDict
 from typing import Optional, List, Any
 from datetime import datetime, date as DateType, time as TimeType
+from decimal import Decimal
 
 
 # -------------------------
@@ -55,12 +56,14 @@ class BookingRescheduleRequest(BaseModel):
     booking_date: DateType
     start_time: TimeType
     resource_id: Optional[int] = None  # PRD §19.1: date, time and/or resource
+    reason: Optional[str] = None  # Milestone 8 ID-047: mandatory when a staff actor overrides the customer policy
 
     model_config = ConfigDict(extra="forbid")
 
 
 class BookingCancelRequest(BaseModel):
-    reason: Optional[str] = None  # PRD §20: optional cancellation reason
+    reason: Optional[str] = None  # PRD §20: optional for customers; Milestone 8 ID-047 makes it mandatory for staff
+    refund_override_amount: Optional[Decimal] = None  # Milestone 8 rule 16: Owner/Branch Manager only
 
     model_config = ConfigDict(extra="forbid")
 

@@ -92,6 +92,14 @@ async def razorpay_webhook(
     except Exception:
         pass
 
+    # Post-Phase-10 hardening: refund lifecycle is asynchronous
+    # (refund.created -> refund.processed | refund.failed) — reconcile our
+    # Refund row's deferred confirmation the same defensive way.
+    try:
+        crud_payment.reconcile_refund_webhook_event(db, event_type, payload)
+    except Exception:
+        pass
+
     event.processing_status = "Processed"
     event.processed_at = datetime.utcnow()
     db.commit()

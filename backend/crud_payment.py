@@ -13,13 +13,14 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Optional
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
 
 from models import (
     Business, Branch, BranchService, BookingHold, Payment, Refund,
     BookingFinancial, Booking, BookingPriceAdjustment, PlatformFeeSetting,
-    User, PlatformCustomer, BusinessCustomer,
+    User, PlatformCustomer, BusinessCustomer, AuditLog,
 )
 from audit import write_audit
 import crud_booking
@@ -63,6 +64,67 @@ def _actor_role_label(db: Session, business_id: int, user_id: int) -> str:
     if crud_booking._get_manager_current_branch_id(db, business_id, user_id) is not None:
         return "BRANCH_MANAGER"
     return "SYSTEM"
+
+
+def _refund_status_from_response(response: dict) -> "tuple[str, Optional[datetime]]":
+    """
+    Post-Phase-10 hardening: Razorpay refund creation is asynchronous
+    (verified against current docs — razorpay.com/docs/webhooks/refunds/).
+    A refund's lifecycle is `refund.created` -> `refund.processed` |
+    `refund.failed`; the create-refund API call's own response already
+    reports a `status` field reflecting which stage it's at: `"processed"`
+    for a normal-speed refund confirmed complete synchronously (the common
+    case), `"pending"` for one still awaiting the provider's asynchronous
+    confirmation (e.g. instant-speed refunds under load), or `"failed"`.
+    Anything not explicitly `"processed"`/`"failed"` is treated
+    conservatively as still pending — final confirmation then arrives via
+    `reconcile_refund_webhook_event`. This is the one place that decides
+    "Completed" vs "Initiated" vs "Failed"; every `create_refund` call site
+    in this module uses it rather than assuming success.
+    """
+    provider_status = (response or {}).get("status")
+    if provider_status == "processed":
+        return "Completed", datetime.utcnow()
+    if provider_status == "failed":
+        return "Failed", None
+    return "Initiated", None
+
+
+def _acquire_booking_lock(db: Session, booking_id: int) -> None:
+    """
+    Phase 8 concurrency guard: transaction-scoped advisory lock serializing
+    financial mutations (cancellation refund, refund override) for one
+    booking, so two concurrent cancellation attempts on the same booking
+    can never both process a refund. Uses the single-bigint-key form of
+    `pg_advisory_xact_lock`, a separate lock namespace from the
+    two-int-key form `crud_booking._acquire_resource_lock` uses for
+    resource/date occupancy — the two never collide. No-op on SQLite, same
+    rationale as `crud_booking._acquire_resource_lock`.
+    """
+    if db.bind.dialect.name != "postgresql":
+        return
+    db.execute(text("SELECT pg_advisory_xact_lock(:booking_id)"), {"booking_id": booking_id})
+
+
+_CANCELLATION_REFUND_AUDIT_ACTIONS = ("BOOKING_CANCELLATION_REFUND_CALCULATED", "BOOKING_REFUND_OVERRIDDEN")
+
+
+def _existing_cancellation_refund_result(db: Session, booking_id: int) -> Optional[AuditLog]:
+    """Idempotency guard: a cancellation-refund audit entry already exists
+    for this booking once it has been processed once. Combined with
+    `_acquire_booking_lock`, this ensures a second concurrent (or retried)
+    cancellation request observes the already-recorded outcome instead of
+    issuing a second refund."""
+    return (
+        db.query(AuditLog)
+        .filter(
+            AuditLog.entity_type == "Booking",
+            AuditLog.entity_id == booking_id,
+            AuditLog.action.in_(_CANCELLATION_REFUND_AUDIT_ACTIONS),
+        )
+        .order_by(AuditLog.id.desc())
+        .first()
+    )
 
 
 def effective_platform_fee_rate(db: Session, business_id: int) -> Decimal:
@@ -279,17 +341,17 @@ def _handle_lost_hold_payment(db: Session, hold: BookingHold, payment: Payment) 
         try:
             response = razorpay_service.create_refund(payment.razorpay_payment_id, Decimal(payment.amount))
             razorpay_refund_id = response.get("id")
-            refund_status = "Completed"
+            refund_status, completed_at = _refund_status_from_response(response)
         except Exception:
             razorpay_refund_id = None
-            refund_status = "Failed"
+            refund_status, completed_at = "Failed", None
         refund_method = "Gateway"
     else:
         # Cash/manual flows finalize synchronously in the same request that
         # collects the money, so a lost hold should never reach this branch
         # for them — recorded defensively rather than silently dropped.
         razorpay_refund_id = None
-        refund_status = "Failed"
+        refund_status, completed_at = "Failed", None
         refund_method = "Manual"
 
     refund = Refund(
@@ -297,8 +359,7 @@ def _handle_lost_hold_payment(db: Session, hold: BookingHold, payment: Payment) 
         calculated_amount=Decimal(payment.amount), final_amount=Decimal(payment.amount),
         reason="Automatic refund: checkout hold expired/was lost before payment could be finalized",
         actor_id=hold.created_by, role_snapshot="SYSTEM", refund_method=refund_method,
-        razorpay_refund_id=razorpay_refund_id, status=refund_status,
-        completed_at=datetime.utcnow() if refund_status == "Completed" else None,
+        razorpay_refund_id=razorpay_refund_id, status=refund_status, completed_at=completed_at,
     )
     db.add(refund)
 
@@ -405,10 +466,18 @@ def verify_customer_checkout_payment(db: Session, hold_id: int, payload, current
 
 def _verify_and_capture_payment(db: Session, payment: Payment, razorpay_payment_id: str, razorpay_signature: str) -> None:
     """
-    rule 11/26: server-side signature verification — the browser success
-    callback alone is never trusted. Idempotent: if this Payment was
-    already Captured (e.g. the webhook beat the client's verify call),
-    re-verifying is a safe no-op rather than an error.
+    rule 11/26, reviewed and hardened in Phase 8: server-side signature
+    verification is necessary but NOT sufficient. A valid signature only
+    proves the `(order_id, payment_id)` pairing is authentic — it is not
+    proof that the payment was actually captured (it can be produced for a
+    merely-authorized, or even a since-refunded, payment). Every capture
+    now requires an explicit server-to-server fetch against Razorpay's
+    Payments API confirming `status == "captured"` and a matching amount,
+    before this Payment row is ever marked Captured. The browser callback
+    is never trusted at any point in this sequence.
+
+    Idempotent: if this Payment was already Captured (e.g. the webhook
+    beat the client's verify call), re-verifying is a safe no-op.
     """
     if payment.status == "Captured":
         return
@@ -419,6 +488,25 @@ def _verify_and_capture_payment(db: Session, payment: Payment, razorpay_payment_
         payment.status = "Failed"
         db.commit()
         raise HTTPException(status_code=400, detail="Payment verification failed")
+
+    # Signature alone is not capture proof (Phase 8 hardening) — confirm
+    # against Razorpay directly.
+    try:
+        provider_payment = razorpay_service.fetch_payment(razorpay_payment_id)
+    except Exception:
+        payment.status = "Failed"
+        db.commit()
+        raise HTTPException(status_code=400, detail="Unable to confirm payment capture with the payment provider")
+
+    if provider_payment.get("status") != "captured":
+        payment.status = "Failed"
+        db.commit()
+        raise HTTPException(status_code=400, detail=f"Payment has not been captured (provider status: {provider_payment.get('status')})")
+
+    if int(provider_payment.get("amount", -1)) != razorpay_service.to_paise(payment.amount):
+        payment.status = "Failed"
+        db.commit()
+        raise HTTPException(status_code=400, detail="Captured amount does not match the expected amount")
 
     payment.razorpay_payment_id = razorpay_payment_id
     payment.verified_at = datetime.utcnow()
@@ -703,20 +791,19 @@ def verify_balance_payment(db: Session, booking_id: int, payload, current_user: 
             try:
                 refund_response = razorpay_service.create_refund(payment.razorpay_payment_id, Decimal(payment.amount))
                 razorpay_refund_id = refund_response.get("id")
-                refund_status = "Completed"
+                refund_status, completed_at = _refund_status_from_response(refund_response)
             except Exception:
                 razorpay_refund_id = None
-                refund_status = "Failed"
+                refund_status, completed_at = "Failed", None
         else:
             razorpay_refund_id = None
-            refund_status = "Failed"
+            refund_status, completed_at = "Failed", None
         db.add(Refund(
             business_id=booking.business_id, branch_id=booking.branch_id, booking_id=booking.id, payment_id=payment.id,
             calculated_amount=Decimal(payment.amount), final_amount=Decimal(payment.amount),
             reason="Automatic refund: balance payment captured after the 48-hour deadline had already been enforced",
             actor_id=current_user.id, role_snapshot="SYSTEM", refund_method="Gateway",
-            razorpay_refund_id=razorpay_refund_id, status=refund_status,
-            completed_at=datetime.utcnow() if refund_status == "Completed" else None,
+            razorpay_refund_id=razorpay_refund_id, status=refund_status, completed_at=completed_at,
         ))
         db.commit()
         raise HTTPException(
@@ -892,3 +979,415 @@ def reconcile_webhook_event(db: Session, event_type: str, payload: dict) -> None
             financial.financial_status = "FullyPaid"
             _apply_platform_fee(db, payment, financial)
             db.commit()
+
+
+_REFUND_LIFECYCLE_EVENTS = ("refund.processed", "refund.failed")
+
+
+def reconcile_refund_webhook_event(db: Session, event_type: str, payload: dict) -> None:
+    """
+    Post-Phase-10 hardening: Razorpay refund processing is asynchronous
+    (verified against current docs — the lifecycle is `refund.created` ->
+    `refund.processed` | `refund.failed`, with a separate
+    `refund.speed_changed` event that never changes completion state).
+    Every `create_refund` call site in this module now records a refund as
+    `Initiated` unless the creation response itself already reported
+    `"processed"`/`"failed"` (see `_refund_status_from_response`); this
+    function applies the deferred confirmation when it arrives.
+
+    Idempotent and safe under duplicate/out-of-order delivery: only a
+    Refund currently `Initiated` is ever transitioned — a refund already
+    `Completed` or `Failed` (whether from a synchronous response or a
+    prior webhook) is left untouched no matter which event arrives, how
+    many times, or in what order, so `BookingFinancial.amount_refunded`
+    can never be incremented twice for the same refund. `refund.created`
+    is intentionally a no-op here: we already create the Refund row
+    ourselves at the moment we call the API, so this event only ever
+    confirms something we already have, never something to newly create
+    (creating a webhook-driven Refund row here could produce one with no
+    corresponding booking/payment context).
+
+    Payload path (`payload.refund.entity.id`) follows Razorpay's
+    documented refund webhook payload structure
+    (razorpay.com/docs/webhooks/refunds/); as with the payment webhook
+    reconciliation above, the exact shape should be spot-checked against a
+    live payload before production use, since the docs page for the full
+    payload schema was not directly fetchable during implementation.
+    """
+    if event_type not in _REFUND_LIFECYCLE_EVENTS:
+        return
+
+    entity = (payload or {}).get("payload", {})
+    razorpay_refund_id = entity.get("refund", {}).get("entity", {}).get("id")
+    if not razorpay_refund_id:
+        return
+
+    refund = db.query(Refund).filter(Refund.razorpay_refund_id == razorpay_refund_id).first()
+    if refund is None or refund.status != "Initiated":
+        return  # unknown refund, or already confirmed -> safe no-op
+
+    if event_type == "refund.failed":
+        refund.status = "Failed"
+        db.commit()
+        return
+
+    # refund.processed
+    refund.status = "Completed"
+    refund.completed_at = datetime.utcnow()
+
+    if refund.booking_id is not None:
+        financial = db.query(BookingFinancial).filter(BookingFinancial.booking_id == refund.booking_id).first()
+        if financial is not None:
+            financial.amount_refunded = Decimal(financial.amount_refunded) + Decimal(refund.final_amount)
+
+    db.commit()
+
+
+# -------------------------
+# PHASE 8 — CANCELLATION REFUND CALCULATION (rule 2/15/16; ID-047)
+# -------------------------
+
+CANCELLATION_FULL_REFUND_HOURS = 48
+CANCELLATION_PARTIAL_REFUND_HOURS = 24
+CANCELLATION_PARTIAL_REFUND_PERCENTAGE = Decimal("50")
+
+
+def calculate_cancellation_refund_percentage(hours_before_appointment: float) -> Decimal:
+    """rule 2/15: applied to money ACTUALLY PAID, never the unpaid total."""
+    if hours_before_appointment >= CANCELLATION_FULL_REFUND_HOURS:
+        return Decimal("100")
+    if hours_before_appointment >= CANCELLATION_PARTIAL_REFUND_HOURS:
+        return CANCELLATION_PARTIAL_REFUND_PERCENTAGE
+    return Decimal("0")
+
+
+_REFUND_COMMITTED_STATUSES = ("Completed", "Initiated")  # everything except Failed counts as "spoken for"
+
+
+def _total_captured_and_refunded(db: Session, booking_id: int):
+    """Returns (total_captured, total_already_refunded) for a booking,
+    across every payment method — the ceiling any refund (calculated or
+    overridden) must never exceed (rule 16). Counts `Initiated` (a refund
+    request Razorpay has accepted but not yet confirmed complete)
+    alongside `Completed` — Razorpay refunds are asynchronous, so a
+    still-pending refund has already committed that money; treating it as
+    "not yet refunded" here would let a second, concurrent refund attempt
+    exceed the true refundable ceiling before the first one's webhook
+    confirmation ever arrives."""
+    captured = db.query(Payment).filter(Payment.booking_id == booking_id, Payment.status == "Captured").all()
+    total_captured = sum((Decimal(p.amount) for p in captured), Decimal("0"))
+    committed_refunds = (
+        db.query(Refund)
+        .filter(Refund.booking_id == booking_id, Refund.status.in_(_REFUND_COMMITTED_STATUSES))
+        .all()
+    )
+    total_refunded = sum((Decimal(r.final_amount) for r in committed_refunds), Decimal("0"))
+    return total_captured, total_refunded
+
+
+def _distribute_and_process_refund(
+    db: Session, booking: Booking, refund_amount: Decimal, actor_id: int, role_snapshot: str, reason: str
+) -> list:
+    """
+    Distributes `refund_amount` across the booking's Captured payments (in
+    creation order), routing each portion per ID-053 (Gateway for
+    RazorpayOnline, Manual for everything else — cash/external payments
+    are refunded by staff outside the system and recorded here as
+    Completed immediately, mirroring the same precedent
+    `staff_cash_checkout` already established for recording cash
+    collection). Never refunds more against any one payment than that
+    payment's own remaining refundable amount (rule 16) — the caller is
+    responsible for capping `refund_amount` at the booking-wide refundable
+    ceiling (`_total_captured_and_refunded`) before calling this.
+
+    Reverses the proportional platform fee earned on each affected online
+    payment (ID-051/rule 20), using that payment's own snapshotted fee
+    amount — never today's platform-fee configuration.
+    """
+    remaining = Decimal(refund_amount)
+    refunds = []
+
+    payments = db.query(Payment).filter(Payment.booking_id == booking.id, Payment.status == "Captured").order_by(Payment.id).all()
+    for payment in payments:
+        if remaining <= 0:
+            break
+        already_refunded_for_payment = (
+            db.query(Refund)
+            .filter(Refund.payment_id == payment.id, Refund.status.in_(_REFUND_COMMITTED_STATUSES))
+            .all()
+        )
+        refunded_so_far = sum((Decimal(r.final_amount) for r in already_refunded_for_payment), Decimal("0"))
+        refundable = Decimal(payment.amount) - refunded_so_far
+        if refundable <= 0:
+            continue
+        portion = min(remaining, refundable)
+
+        if payment.method == "RazorpayOnline" and payment.razorpay_payment_id:
+            try:
+                response = razorpay_service.create_refund(payment.razorpay_payment_id, portion)
+                razorpay_refund_id = response.get("id")
+                status, completed_at = _refund_status_from_response(response)
+            except Exception:
+                razorpay_refund_id = None
+                status, completed_at = "Failed", None
+            refund_method = "Gateway"
+        else:
+            # Cash/manual refunds are handed back by staff outside the
+            # system, synchronously with recording them — there is no
+            # asynchronous provider confirmation to await, matching the
+            # existing `staff_cash_checkout` precedent for cash collection.
+            razorpay_refund_id = None
+            status, completed_at = "Completed", datetime.utcnow()
+            refund_method = "Manual"
+
+        # Fee reversal is calculated here regardless of status (it reflects
+        # what this refund portion implies about earned fee), but the
+        # BookingFinancial.amount_refunded accounting below only counts a
+        # refund once its status is actually Completed, so a still-pending
+        # (Initiated) online refund cannot double up with its own later
+        # webhook confirmation.
+        fee_reversal = None
+        if payment.method == "RazorpayOnline" and payment.platform_fee_amount is not None:
+            fee_reversal = (Decimal(payment.platform_fee_amount) * portion / Decimal(payment.amount)).quantize(TWO_PLACES)
+
+        refund = Refund(
+            business_id=booking.business_id, branch_id=booking.branch_id, booking_id=booking.id, payment_id=payment.id,
+            calculated_amount=portion, final_amount=portion, reason=reason, actor_id=actor_id, role_snapshot=role_snapshot,
+            refund_method=refund_method, razorpay_refund_id=razorpay_refund_id, status=status,
+            platform_fee_reversal_amount=fee_reversal, completed_at=completed_at,
+        )
+        db.add(refund)
+        db.flush()
+        refunds.append(refund)
+
+        if status in _REFUND_COMMITTED_STATUSES:
+            # Committed (Completed now, or Initiated and awaiting the
+            # provider's async confirmation) -> this portion of the
+            # requested refund_amount is spoken for either way, so the
+            # remaining shortfall must not be re-attempted against another
+            # payment (that would risk over-refunding once a pending one
+            # later confirms).
+            remaining -= portion
+
+    if refunds:
+        financial = db.query(BookingFinancial).filter(BookingFinancial.booking_id == booking.id).first()
+        if financial is not None:
+            # Deliberately "Completed" only (not the wider committed-status
+            # set used above) — amount_refunded is the confirmed-money
+            # ledger. A still-Initiated refund's contribution is added
+            # later, exactly once, by reconcile_refund_webhook_event when
+            # its refund.processed confirmation arrives.
+            completed_total = sum((Decimal(r.final_amount) for r in refunds if r.status == "Completed"), Decimal("0"))
+            financial.amount_refunded = Decimal(financial.amount_refunded) + completed_total
+
+    return refunds
+
+
+def cancel_customer_booking_with_refund(db: Session, booking_id: int, payload, current_user: User) -> dict:
+    """rule 2/3/15: customer cancellation, refund calculated against money
+    actually paid using the frozen time-bracket percentages."""
+    booking_before = crud_booking.get_booking_or_404(db, booking_id)
+    hours_before = (appointment_datetime(booking_before.booking_date, booking_before.start_time) - datetime.utcnow()).total_seconds() / 3600.0
+
+    booking = crud_booking.cancel_booking(db, booking_id, payload, current_user, actor_is_customer=True)
+
+    refund_result = _apply_cancellation_refund(
+        db, booking, hours_before, current_user.id, "CUSTOMER", refund_override_amount=None, reason=None,
+    )
+    return {"booking": crud_booking.serialize_booking(db, booking), "refund": refund_result}
+
+
+def staff_cancel_booking_with_refund(db: Session, booking_id: int, payload, current_user: User) -> dict:
+    """rule 4/16: staff cancellation is unrestricted and a reason is
+    optional by default (PRD §20's baseline, unchanged) — a customer can
+    always cancel, so a plain staff cancellation using the normal
+    calculated refund is not "overriding" anything. A reason becomes
+    mandatory only when actually overriding the calculated refund amount
+    (enforced in `_apply_cancellation_refund`), matching rule 4/16's
+    override-specific wording precisely."""
+    booking_before = crud_booking.get_booking_or_404(db, booking_id)
+    hours_before = (appointment_datetime(booking_before.booking_date, booking_before.start_time) - datetime.utcnow()).total_seconds() / 3600.0
+    role_snapshot = _actor_role_label(db, booking_before.business_id, current_user.id)
+
+    booking = crud_booking.cancel_booking(db, booking_id, payload, current_user, actor_is_customer=False)
+
+    refund_result = _apply_cancellation_refund(
+        db, booking, hours_before, current_user.id, role_snapshot,
+        refund_override_amount=getattr(payload, "refund_override_amount", None), reason=payload.reason,
+    )
+    return {"booking": crud_booking.serialize_booking(db, booking), "refund": refund_result}
+
+
+def _apply_cancellation_refund(
+    db: Session, booking: Booking, hours_before: float, actor_id: int, role_snapshot: str,
+    refund_override_amount, reason,
+) -> Optional[dict]:
+    # Phase 8 concurrency/idempotency guard: two concurrent (or retried)
+    # cancellation requests for the same booking must never both process a
+    # refund. The lock serializes them; the audit-log check makes whichever
+    # arrives second (after the first has committed) a safe no-op replay
+    # of the already-recorded outcome rather than a second refund.
+    _acquire_booking_lock(db, booking.id)
+    existing = _existing_cancellation_refund_result(db, booking.id)
+    if existing is not None:
+        refunds = db.query(Refund).filter(Refund.booking_id == booking.id).order_by(Refund.id).all()
+        # Includes Initiated (pending provider confirmation) alongside
+        # Completed, consistent with how committed-refund totals are
+        # computed everywhere else in this module.
+        final_amount = sum((Decimal(r.final_amount) for r in refunds if r.status in _REFUND_COMMITTED_STATUSES), Decimal("0"))
+        return {
+            "calculated_percentage": None, "calculated_amount": None,
+            "final_amount": str(final_amount), "overridden": existing.action == "BOOKING_REFUND_OVERRIDDEN",
+            "refund_ids": [r.id for r in refunds], "already_processed": True,
+        }
+
+    financial = db.query(BookingFinancial).filter(BookingFinancial.booking_id == booking.id).first()
+    if financial is None or Decimal(financial.amount_paid) <= 0:
+        return None  # nothing was ever paid (e.g. Reserve Without Payment) -> nothing to refund
+
+    calculated_percentage = calculate_cancellation_refund_percentage(hours_before)
+    calculated_amount = (Decimal(financial.amount_paid) * calculated_percentage / Decimal("100")).quantize(TWO_PLACES)
+
+    total_captured, total_already_refunded = _total_captured_and_refunded(db, booking.id)
+    max_refundable = total_captured - total_already_refunded
+
+    final_amount = min(calculated_amount, max_refundable) if max_refundable > 0 else Decimal("0")
+    overridden = False
+    if refund_override_amount is not None:
+        override_amount = Decimal(refund_override_amount)
+        if override_amount != calculated_amount:
+            if not reason:
+                raise HTTPException(status_code=400, detail="A reason is required to override the calculated refund amount")
+            if override_amount > max_refundable:
+                raise HTTPException(status_code=400, detail=f"Refund override cannot exceed the refundable amount ({max_refundable})")
+            if override_amount < 0:
+                raise HTTPException(status_code=400, detail="Refund override cannot be negative")
+            final_amount = override_amount
+            overridden = True
+
+    refunds = []
+    if final_amount > 0:
+        refunds = _distribute_and_process_refund(
+            db, booking, final_amount, actor_id, role_snapshot,
+            reason=reason or f"Customer cancellation ({hours_before:.1f}h notice, {calculated_percentage}% policy)",
+        )
+
+    write_audit(
+        db, business_id=booking.business_id, entity_type="Booking", entity_id=booking.id,
+        action="BOOKING_REFUND_OVERRIDDEN" if overridden else "BOOKING_CANCELLATION_REFUND_CALCULATED",
+        performed_by=actor_id, previous_value=f"calculated={calculated_amount}", new_value=f"final={final_amount}",
+        reason=reason, commit=False,
+    )
+    db.commit()
+
+    return {
+        "calculated_percentage": str(calculated_percentage), "calculated_amount": str(calculated_amount),
+        "final_amount": str(final_amount), "overridden": overridden,
+        "refund_ids": [r.id for r in refunds],
+    }
+
+
+# -------------------------
+# PHASE 8 — RESCHEDULE PRICE DIFFERENCE (rule 14)
+# -------------------------
+
+def apply_reschedule_price_difference(db: Session, booking: Booking, actor_id: int, role_snapshot: str) -> Optional[dict]:
+    """
+    rule 14: rescheduling normally retains the same service, but if the
+    service's current effective price differs from what this booking's
+    amount was locked in at, the difference is collected (price increased)
+    or refunded (price decreased). Called after `crud_booking.
+    reschedule_booking` has already committed the schedule change — a
+    separate, best-effort financial follow-on step, consistent with the
+    rest of this module's multi-commit checkout flows.
+    """
+    financial = db.query(BookingFinancial).filter(BookingFinancial.booking_id == booking.id).first()
+    if financial is None:
+        return None
+
+    branch_service = get_branch_service_or_404(db, booking.branch_service_id)
+    new_effective_price = Decimal(branch_service.price)
+    previous_total = Decimal(financial.total_amount)
+    diff = (new_effective_price - previous_total).quantize(TWO_PLACES)
+    if diff == 0:
+        return None
+
+    db.add(BookingPriceAdjustment(
+        booking_id=booking.id, adjustment_type="ReschedulePriceDiff",
+        previous_value=previous_total, new_value=new_effective_price,
+        actor_id=actor_id, role_snapshot=role_snapshot, reason="Reschedule price difference (service price changed)",
+    ))
+    financial.total_amount = new_effective_price
+
+    result = {"previous_amount": str(previous_total), "new_amount": str(new_effective_price), "difference": str(diff)}
+
+    if diff > 0:
+        order = razorpay_service.create_order(diff, "INR", receipt=f"reschedule-diff-{booking.id}")
+        payment = Payment(
+            business_id=booking.business_id, branch_id=booking.branch_id, booking_id=booking.id,
+            payment_type="RescheduleCollection", method="RazorpayOnline", status="Created",
+            amount=diff, currency="INR", razorpay_order_id=order["id"], created_by=actor_id,
+        )
+        db.add(payment)
+        db.commit()
+        settings = get_settings()
+        result.update({
+            "action": "CollectDifference", "amount_due": str(diff),
+            "razorpay_order_id": order["id"], "razorpay_key_id": settings.RAZORPAY_KEY_ID,
+        })
+    else:
+        requested_refund = -diff
+        total_captured, total_already_refunded = _total_captured_and_refunded(db, booking.id)
+        max_refundable = total_captured - total_already_refunded
+        refund_amount = min(requested_refund, max_refundable) if max_refundable > 0 else Decimal("0")
+        refunds = []
+        if refund_amount > 0:
+            refunds = _distribute_and_process_refund(
+                db, booking, refund_amount, actor_id, role_snapshot, reason="Reschedule price decrease"
+            )
+        db.commit()
+        result.update({"action": "RefundIssued", "amount_refunded": str(refund_amount), "refund_ids": [r.id for r in refunds]})
+
+    return result
+
+
+def verify_reschedule_price_difference_payment(db: Session, booking_id: int, payload, current_user: User) -> dict:
+    booking = crud_booking.get_booking_or_404(db, booking_id)
+    crud_booking._require_owning_customer(db, booking, current_user)
+
+    payment = (
+        db.query(Payment)
+        .filter(Payment.booking_id == booking.id, Payment.payment_type == "RescheduleCollection", Payment.status == "Created")
+        .order_by(Payment.id.desc())
+        .first()
+    )
+    if not payment:
+        raise HTTPException(status_code=404, detail="No reschedule price-difference payment found for this booking")
+
+    _verify_and_capture_payment(db, payment, payload.razorpay_payment_id, payload.razorpay_signature)
+
+    financial = db.query(BookingFinancial).filter(BookingFinancial.booking_id == booking.id).first()
+    financial.amount_paid = Decimal(financial.amount_paid) + Decimal(payment.amount)
+    _apply_platform_fee(db, payment, financial)
+
+    write_audit(
+        db, business_id=booking.business_id, entity_type="Booking", entity_id=booking.id,
+        action="BOOKING_RESCHEDULE_DIFFERENCE_PAID", performed_by=current_user.id,
+        new_value=f"amount={payment.amount}", commit=False,
+    )
+    db.commit()
+    db.refresh(booking)
+    return {"status": "Confirmed", "booking": crud_booking.serialize_booking(db, booking)}
+
+
+def reschedule_customer_booking(db: Session, booking_id: int, payload, current_user: User) -> dict:
+    booking = crud_booking.reschedule_booking(db, booking_id, payload, current_user, actor_is_customer=True)
+    price_result = apply_reschedule_price_difference(db, booking, current_user.id, "CUSTOMER")
+    return {"booking": crud_booking.serialize_booking(db, booking), "price_adjustment": price_result}
+
+
+def reschedule_staff_booking(db: Session, booking_id: int, payload, current_user: User) -> dict:
+    booking = crud_booking.reschedule_booking(db, booking_id, payload, current_user, actor_is_customer=False)
+    role_snapshot = _actor_role_label(db, booking.business_id, current_user.id)
+    price_result = apply_reschedule_price_difference(db, booking, current_user.id, role_snapshot)
+    return {"booking": crud_booking.serialize_booking(db, booking), "price_adjustment": price_result}

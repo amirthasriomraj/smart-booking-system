@@ -134,6 +134,16 @@ def verify_balance_payment(
 # Phase 6 — Staff payment flows (rule 12)
 # -----------------------------
 
+@router.post("/customer/bookings/{booking_id}/pay-reschedule-difference/verify", response_model=CheckoutResponse)
+def verify_reschedule_price_difference_payment(
+    booking_id: int,
+    payload: PaymentVerifyRequest,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return crud_payment.verify_reschedule_price_difference_payment(db, booking_id, payload, current_user)
+
+
 @router.post("/branches/{branch_id}/checkout/cash", response_model=CheckoutResponse)
 def staff_cash_checkout(
     branch_id: int,

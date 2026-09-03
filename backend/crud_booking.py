@@ -680,6 +680,27 @@ def reschedule_booking(db: Session, booking_id: int, payload, current_user: User
 
     _require_active_status(booking)
 
+    # Milestone 8 Phase 8 (ID-047): customer self-reschedule is capped at
+    # >=24h notice and once per booking; business-side reschedule remains
+    # unrestricted but must supply a reason whenever it overrides a
+    # restriction the customer could not have exercised themselves right
+    # now (i.e. exactly the situations a customer request would be
+    # rejected for below).
+    appointment_dt = datetime.combine(booking.booking_date, booking.start_time)
+    hours_until_appointment = (appointment_dt - datetime.utcnow()).total_seconds() / 3600.0
+    customer_would_be_blocked = hours_until_appointment < 24 or booking.customer_reschedule_count >= 1
+
+    if actor_is_customer:
+        if hours_until_appointment < 24:
+            raise HTTPException(status_code=409, detail="Reschedule requires at least 24 hours' notice")
+        if booking.customer_reschedule_count >= 1:
+            raise HTTPException(status_code=409, detail="You have already used your one self-reschedule for this booking")
+    elif customer_would_be_blocked and not getattr(payload, "reason", None):
+        raise HTTPException(
+            status_code=400,
+            detail="A reason is required to reschedule outside the customer policy (< 24h notice or reschedule limit already used)",
+        )
+
     branch_service = get_branch_service_or_404(db, booking.branch_service_id)
     _check_bookable_state(business, branch, branch_service)  # §19.2: re-validate availability
 
@@ -722,6 +743,8 @@ def reschedule_booking(db: Session, booking_id: int, payload, current_user: User
     booking.start_time = payload.start_time
     booking.end_time = _minutes_to_time(_minutes(payload.start_time) + duration_minutes)
     booking.resource_id = resource.id
+    if actor_is_customer:
+        booking.customer_reschedule_count += 1
 
     new_state = _booking_state_snapshot(booking)
 
@@ -736,6 +759,7 @@ def reschedule_booking(db: Session, booking_id: int, payload, current_user: User
         performed_by=current_user.id,
         previous_value=_state_to_audit_string(previous_state),
         new_value=_state_to_audit_string(new_state),
+        reason=getattr(payload, "reason", None),
         commit=False,
     )
 

@@ -34,7 +34,11 @@ def stub_razorpay(monkeypatch):
         lambda amount, currency, receipt: {"id": f"order_fake_{receipt}"},
     )
     monkeypatch.setattr(crud_payment.razorpay_service, "verify_payment_signature", lambda *a, **k: True)
-    monkeypatch.setattr(crud_payment.razorpay_service, "create_refund", lambda *a, **k: {"id": "rfnd_fake"})
+    # Phase 8 hardening: capture now also requires a server-side fetch
+    # confirming provider status + amount, independent of the signature.
+    monkeypatch.setattr(crud_payment.razorpay_service, "fetch_payment", lambda payment_id: {"status": "captured", "amount": 10**12})
+    monkeypatch.setattr(crud_payment.razorpay_service, "to_paise", lambda amount: 10**12)
+    monkeypatch.setattr(crud_payment.razorpay_service, "create_refund", lambda *a, **k: {"id": "rfnd_fake", "status": "processed"})
 
 
 def _customer_token_for(setup):
@@ -206,6 +210,72 @@ def test_verify_rejects_invalid_signature(monkeypatch):
     verify = client.post(
         f"/api/v1/customer/checkout/{checkout['hold_id']}/verify",
         json={"razorpay_payment_id": "pay_fake_bad", "razorpay_signature": "wrong"},
+        headers=_auth(customer_token),
+    )
+    assert verify.status_code == 400, verify.text
+
+    db = SessionLocal()
+    try:
+        payment = db.query(Payment).filter(Payment.booking_hold_id == checkout["hold_id"]).first()
+        assert payment.status == "Failed"
+    finally:
+        db.close()
+
+
+def test_verify_rejects_valid_signature_if_provider_reports_not_captured(monkeypatch):
+    """Phase 8 hardening: a valid signature must NOT be treated as capture
+    proof by itself — if Razorpay's own fetch reports the payment as, say,
+    merely 'authorized' (not yet captured), the booking must not be
+    confirmed."""
+    setup = _bookable_setup()
+    customer_token = _customer_token_for(setup)
+    monkeypatch.setattr(crud_payment.razorpay_service, "fetch_payment", lambda payment_id: {"status": "authorized", "amount": 10**12})
+
+    checkout = client.post(
+        "/api/v1/customer/checkout",
+        json={
+            "branch_service_id": setup["branch_service"]["id"], "booking_date": str(BOOKING_DATE),
+            "start_time": "09:00:00", "payment_option": "Full",
+        },
+        headers=_auth(customer_token),
+    ).json()
+
+    verify = client.post(
+        f"/api/v1/customer/checkout/{checkout['hold_id']}/verify",
+        json={"razorpay_payment_id": "pay_fake_authorized_only", "razorpay_signature": "sig_ok"},
+        headers=_auth(customer_token),
+    )
+    assert verify.status_code == 400, verify.text
+
+    db = SessionLocal()
+    try:
+        payment = db.query(Payment).filter(Payment.booking_hold_id == checkout["hold_id"]).first()
+        assert payment.status == "Failed"
+        assert payment.booking_id is None  # never confirmed into a Booking
+    finally:
+        db.close()
+
+
+def test_verify_rejects_valid_signature_if_captured_amount_mismatches(monkeypatch):
+    """Phase 8 hardening: captured amount must match what we expect —
+    guards against a signature being replayed against a payment captured
+    for a different (e.g. tampered) amount."""
+    setup = _bookable_setup()
+    customer_token = _customer_token_for(setup)
+    monkeypatch.setattr(crud_payment.razorpay_service, "fetch_payment", lambda payment_id: {"status": "captured", "amount": 1})
+
+    checkout = client.post(
+        "/api/v1/customer/checkout",
+        json={
+            "branch_service_id": setup["branch_service"]["id"], "booking_date": str(BOOKING_DATE),
+            "start_time": "09:00:00", "payment_option": "Full",
+        },
+        headers=_auth(customer_token),
+    ).json()
+
+    verify = client.post(
+        f"/api/v1/customer/checkout/{checkout['hold_id']}/verify",
+        json={"razorpay_payment_id": "pay_fake_amount_mismatch", "razorpay_signature": "sig_ok"},
         headers=_auth(customer_token),
     )
     assert verify.status_code == 400, verify.text

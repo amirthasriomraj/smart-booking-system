@@ -1,4 +1,5 @@
 from datetime import date as DateType
+from decimal import Decimal
 from fastapi import APIRouter, Depends, BackgroundTasks, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -14,13 +15,18 @@ from schemas_booking import (
     BookingResponse,
     BookingHistoryEntryResponse,
 )
+from schemas_payment import BookingActionResponse
 import crud_booking
+import crud_payment
 from dependencies import get_current_user
+from services import notification_service
 from services.email_service import (
     send_booking_confirmation_email,
     send_booking_rescheduled_email,
     send_booking_cancelled_email,
     send_booking_completed_email,
+    send_refund_notification_email,
+    send_reschedule_price_difference_email,
 )
 
 router = APIRouter(tags=["Bookings"])
@@ -40,6 +46,47 @@ def _notify(background_tasks: BackgroundTasks, send_fn, db: Session, booking) ->
         send_fn,
         context["email"], context["business_name"], context["branch_name"], context["service_name"],
         context["booking_date"], context["start_time"],
+    )
+
+
+def _notify_refund_outcome(background_tasks: BackgroundTasks, db: Session, booking, refund_result: dict) -> None:
+    if not refund_result or Decimal(refund_result.get("final_amount", "0")) <= 0:
+        return
+    context = crud_booking.get_booking_notification_context(db, booking)
+    # A booking can be refunded via a mix of Gateway/Manual portions; the
+    # notification names whichever method the largest portion used.
+    from models import Refund
+    refund_rows = db.query(Refund).filter(Refund.id.in_(refund_result.get("refund_ids", []))).all()
+    method = max(refund_rows, key=lambda r: r.final_amount).refund_method if refund_rows else "Manual"
+    background_tasks.add_task(
+        notification_service.log_and_send,
+        booking.created_by, "RefundNotification",
+        lambda: send_refund_notification_email(
+            context["email"], context["business_name"], context["service_name"], refund_result["final_amount"], method,
+        ),
+        booking.business_id, "Booking", booking.id,
+    )
+
+
+def _flatten_action_result(result: dict) -> dict:
+    """Merges the booking's own fields to the top level (matching the
+    pre-Milestone-8 flat BookingResponse shape these endpoints already
+    returned, for backward compatibility) alongside the financial outcome."""
+    return {**result["booking"], "refund": result.get("refund"), "price_adjustment": result.get("price_adjustment")}
+
+
+def _notify_price_adjustment(background_tasks: BackgroundTasks, db: Session, booking, price_result: dict) -> None:
+    if not price_result:
+        return
+    context = crud_booking.get_booking_notification_context(db, booking)
+    amount = price_result.get("amount_due") or price_result.get("amount_refunded")
+    background_tasks.add_task(
+        notification_service.log_and_send,
+        booking.created_by, "ReschedulePriceDifference",
+        lambda: send_reschedule_price_difference_email(
+            context["email"], context["business_name"], context["service_name"], price_result["action"], amount,
+        ),
+        booking.business_id, "Booking", booking.id,
     )
 
 
@@ -120,7 +167,7 @@ def get_booking_history(
     return crud_booking.get_booking_history(db, booking_id, current_user)
 
 
-@router.post("/bookings/{booking_id}/reschedule", response_model=BookingResponse)
+@router.post("/bookings/{booking_id}/reschedule", response_model=BookingActionResponse)
 def reschedule_staff_booking(
     booking_id: int,
     payload: BookingRescheduleRequest,
@@ -128,12 +175,14 @@ def reschedule_staff_booking(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    booking = crud_booking.reschedule_booking(db, booking_id, payload, current_user, actor_is_customer=False)
+    result = crud_payment.reschedule_staff_booking(db, booking_id, payload, current_user)
+    booking = crud_booking.get_booking_or_404(db, booking_id)
     _notify(background_tasks, send_booking_rescheduled_email, db, booking)
-    return crud_booking.serialize_booking(db, booking)
+    _notify_price_adjustment(background_tasks, db, booking, result.get("price_adjustment"))
+    return _flatten_action_result(result)
 
 
-@router.post("/bookings/{booking_id}/cancel", response_model=BookingResponse)
+@router.post("/bookings/{booking_id}/cancel", response_model=BookingActionResponse)
 def cancel_staff_booking(
     booking_id: int,
     payload: BookingCancelRequest,
@@ -141,9 +190,11 @@ def cancel_staff_booking(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    booking = crud_booking.cancel_booking(db, booking_id, payload, current_user, actor_is_customer=False)
+    result = crud_payment.staff_cancel_booking_with_refund(db, booking_id, payload, current_user)
+    booking = crud_booking.get_booking_or_404(db, booking_id)
     _notify(background_tasks, send_booking_cancelled_email, db, booking)
-    return crud_booking.serialize_booking(db, booking)
+    _notify_refund_outcome(background_tasks, db, booking, result.get("refund"))
+    return _flatten_action_result(result)
 
 
 @router.post("/bookings/{booking_id}/reassign-resource", response_model=BookingResponse)
@@ -216,7 +267,7 @@ def get_customer_booking(
     return crud_booking.serialize_booking(db, booking)
 
 
-@router.post("/customer/bookings/{booking_id}/reschedule", response_model=BookingResponse)
+@router.post("/customer/bookings/{booking_id}/reschedule", response_model=BookingActionResponse)
 def reschedule_customer_booking(
     booking_id: int,
     payload: BookingRescheduleRequest,
@@ -224,12 +275,14 @@ def reschedule_customer_booking(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    booking = crud_booking.reschedule_booking(db, booking_id, payload, current_user, actor_is_customer=True)
+    result = crud_payment.reschedule_customer_booking(db, booking_id, payload, current_user)
+    booking = crud_booking.get_booking_or_404(db, booking_id)
     _notify(background_tasks, send_booking_rescheduled_email, db, booking)
-    return crud_booking.serialize_booking(db, booking)
+    _notify_price_adjustment(background_tasks, db, booking, result.get("price_adjustment"))
+    return _flatten_action_result(result)
 
 
-@router.post("/customer/bookings/{booking_id}/cancel", response_model=BookingResponse)
+@router.post("/customer/bookings/{booking_id}/cancel", response_model=BookingActionResponse)
 def cancel_customer_booking(
     booking_id: int,
     payload: BookingCancelRequest,
@@ -237,6 +290,8 @@ def cancel_customer_booking(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    booking = crud_booking.cancel_booking(db, booking_id, payload, current_user, actor_is_customer=True)
+    result = crud_payment.cancel_customer_booking_with_refund(db, booking_id, payload, current_user)
+    booking = crud_booking.get_booking_or_404(db, booking_id)
     _notify(background_tasks, send_booking_cancelled_email, db, booking)
-    return crud_booking.serialize_booking(db, booking)
+    _notify_refund_outcome(background_tasks, db, booking, result.get("refund"))
+    return _flatten_action_result(result)

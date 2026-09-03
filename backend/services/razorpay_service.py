@@ -21,6 +21,15 @@ current Razorpay documentation and the installed SDK source
   guaranteed — redeliveries reuse the same event id) rather than anything
   derived from the payload — see `routers/payments_webhook.py`.
 - Refunds: `client.payment.refund(payment_id, {"amount": <paise>})`.
+- Payment fetch: `client.payment.fetch(payment_id)` — a server-to-server
+  GET against Razorpay's Payments API returning the payment's current
+  `status`/`amount`/etc. Milestone 8 Phase 8 explicit requirement: a valid
+  checkout signature proves the `(order_id, payment_id)` pairing is
+  authentic, but is NOT by itself proof that money was captured (a
+  signature can be produced for an authorized-but-not-yet-captured, or
+  even a since-refunded, payment). `fetch_payment` is used to confirm
+  `status == "captured"` (and the amount matches) server-side before any
+  Payment row is marked Captured — see `crud_payment._verify_and_capture_payment`.
 
 Per ID-055, production Razorpay Route/Linked-Account activation is a
 separate deployment/onboarding prerequisite and is not exercised by this
@@ -44,6 +53,12 @@ def _client() -> razorpay.Client:
 
 def _to_paise(amount_rupees: Decimal) -> int:
     return int((Decimal(amount_rupees) * RUPEES_TO_PAISE).to_integral_value(rounding=ROUND_HALF_UP))
+
+
+def to_paise(amount_rupees: Decimal) -> int:
+    """Public alias of `_to_paise`, for callers (e.g. crud_payment.py) that
+    need to compare a captured amount reported in paise against ours."""
+    return _to_paise(amount_rupees)
 
 
 def create_order(amount_rupees: Decimal, currency: str, receipt: str) -> dict:
@@ -113,6 +128,14 @@ def verify_webhook_signature(raw_body: bytes, signature: str) -> bool:
         return True
     except razorpay.errors.SignatureVerificationError:
         return False
+
+
+def fetch_payment(payment_id: str) -> dict:
+    """Server-to-server confirmation of a payment's actual state — see the
+    module docstring. Never trust a signature alone as capture proof;
+    callers must check the returned `status` (and `amount`) themselves."""
+    client = _client()
+    return client.payment.fetch(payment_id)
 
 
 def create_refund(payment_id: str, amount_rupees: Decimal) -> dict:

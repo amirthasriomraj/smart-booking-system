@@ -310,6 +310,52 @@ payment policy communicated at the time of booking.
         server.send_message(msg)
 
 
+def send_refund_notification_email(email: str, business_name: str, service_name: str, refund_amount, refund_method: str):
+    """Milestone 8 rule 15/16/30 — cancellation/refund financial outcome."""
+    msg = EmailMessage()
+    msg["Subject"] = f"Refund update — {business_name}"
+    msg["From"] = settings.EMAIL_FROM
+    msg["To"] = email
+
+    method_line = "to your original payment method" if refund_method == "Gateway" else "by the business (manual/offline refund)"
+
+    msg.set_content(
+        f"""
+Hello,
+
+Regarding your cancelled booking for "{service_name}" at {business_name}:
+
+Refund amount: Rs. {refund_amount}
+This refund will be processed {method_line}.
+"""
+    )
+
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        server.starttls()
+        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.send_message(msg)
+
+
+def send_reschedule_price_difference_email(email: str, business_name: str, service_name: str, action: str, amount):
+    """Milestone 8 rule 14/30 — reschedule price-difference collected/refunded."""
+    msg = EmailMessage()
+    msg["Subject"] = f"Reschedule price update — {business_name}"
+    msg["From"] = settings.EMAIL_FROM
+    msg["To"] = email
+
+    if action == "CollectDifference":
+        body = f'Your reschedule for "{service_name}" at {business_name} increased the booking amount by Rs. {amount}. Please complete payment for the difference.'
+    else:
+        body = f'Your reschedule for "{service_name}" at {business_name} decreased the booking amount. Rs. {amount} has been refunded to you.'
+
+    msg.set_content(f"\nHello,\n\n{body}\n")
+
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        server.starttls()
+        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.send_message(msg)
+
+
 def send_payment_link_email(email: str, business_name: str, service_name: str, amount, payment_link: str):
     """Business rule 12.B — staff-emailed payment link."""
     msg = EmailMessage()

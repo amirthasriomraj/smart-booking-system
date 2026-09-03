@@ -720,6 +720,13 @@ class Booking(Base):
     cancellation_reason = Column(Text, nullable=True)  # ID-036
     completed_at = Column(DateTime, nullable=True)  # ID-036
 
+    # Milestone 8 Phase 8 (ID-047): caps a customer's self-reschedule at
+    # one per booking. Only ever incremented by a customer-initiated
+    # reschedule — staff-initiated reschedules (unlimited, ID-047) never
+    # touch this counter, so a business-side reschedule never consumes or
+    # resets the customer's own allowance.
+    customer_reschedule_count = Column(Integer, nullable=False, default=0)
+
     created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

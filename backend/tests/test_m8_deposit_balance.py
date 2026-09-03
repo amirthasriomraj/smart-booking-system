@@ -29,7 +29,11 @@ def stub_razorpay(monkeypatch):
         lambda amount, currency, receipt: {"id": f"order_fake_{receipt}"},
     )
     monkeypatch.setattr(crud_payment.razorpay_service, "verify_payment_signature", lambda *a, **k: True)
-    monkeypatch.setattr(crud_payment.razorpay_service, "create_refund", lambda *a, **k: {"id": "rfnd_fake"})
+    # Phase 8 hardening: capture now also requires a server-side fetch
+    # confirming provider status + amount, independent of the signature.
+    monkeypatch.setattr(crud_payment.razorpay_service, "fetch_payment", lambda payment_id: {"status": "captured", "amount": 10**12})
+    monkeypatch.setattr(crud_payment.razorpay_service, "to_paise", lambda amount: 10**12)
+    monkeypatch.setattr(crud_payment.razorpay_service, "create_refund", lambda *a, **k: {"id": "rfnd_fake", "status": "processed"})
 
 
 def _customer_token_for(setup):
