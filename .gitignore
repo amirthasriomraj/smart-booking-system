@@ -19,6 +19,9 @@ venv/
 # Alembic cache
 alembic/versions/__pycache__/
 
+# Celery Beat runtime schedule state (Milestone 8)
+celerybeat-schedule*
+
 # ======================
 # ⚛️ NODE / REACT (FRONTEND)
 # ======================

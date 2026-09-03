@@ -39,5 +39,39 @@ services:
       - "6379:6379"
     restart: always
 
+  # Milestone 8 (ID-049): background/scheduled-job foundation. Worker and
+  # Beat reuse the backend image/env unchanged; no new distributed
+  # infrastructure beyond the Redis instance already present above.
+  celery_worker:
+    build: .
+    command: celery -A celery_app.celery_app worker --loglevel=info
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - .:/app
+    restart: always
+
+  celery_beat:
+    build: .
+    # --schedule keeps Beat's runtime state file (celerybeat-schedule) out
+    # of the bind-mounted source tree (/app is the project directory on the
+    # host) — it belongs in container-local runtime storage, not the repo.
+    command: celery -A celery_app.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - .:/app
+    restart: always
+
 volumes:
   postgres_data:
