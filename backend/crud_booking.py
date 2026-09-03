@@ -2,6 +2,7 @@ import json
 from datetime import datetime, date, time
 from typing import List, Optional, Tuple
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
 
@@ -22,6 +23,7 @@ from models import (
     BusinessCustomer,
     Booking,
     BookingHistory,
+    BookingHold,
 )
 from audit import write_audit
 from crud_branch import get_branch_by_id
@@ -188,6 +190,33 @@ def _overlaps_with_buffer(candidate_start: int, candidate_end: int, existing_sta
     return candidate_start < padded_end and padded_start < candidate_end
 
 
+def _acquire_resource_lock(db: Session, resource_id: int, booking_date: date) -> None:
+    """
+    Milestone 8 (ID-046/ID-056): transaction-scoped PostgreSQL advisory lock
+    serializing every check-then-act availability sequence for one
+    resource/date, across both `Booking` and `BookingHold` creation,
+    reschedule, and manual reassignment. This is the *authoritative*
+    concurrency mechanism (GiST exclusion constraints added in Phase 1B are
+    defense-in-depth only, and do not by themselves prevent a Booking from
+    overlapping a BookingHold).
+
+    `pg_advisory_xact_lock` is automatically released at COMMIT or ROLLBACK
+    — no matching unlock call is needed. `date_key` scopes the lock to one
+    calendar day per resource, so unrelated dates for the same resource
+    never contend.
+
+    No-op on SQLite (the test suite's dialect — see tests/conftest.py):
+    SQLite has no advisory-lock concept and no real concurrent connections
+    in-process, so there is nothing to serialize there. This mirrors the
+    existing dual-dialect pattern used elsewhere in this codebase (e.g.
+    JSONVariant, postgresql_where/sqlite_where).
+    """
+    if db.bind.dialect.name != "postgresql":
+        return
+    date_key = (booking_date - date(1970, 1, 1)).days
+    db.execute(text("SELECT pg_advisory_xact_lock(:resource_id, :date_key)"), {"resource_id": resource_id, "date_key": date_key})
+
+
 def _resource_working_window(db: Session, resource_id: int, weekday: int):
     row = (
         db.query(ResourceWorkingHours)
@@ -212,6 +241,28 @@ def _existing_bookings_for_resource_date(
     return query.all()
 
 
+def _existing_active_holds_for_resource_date(
+    db: Session, resource_id: int, booking_date: date, exclude_hold_id: Optional[int] = None
+) -> List[BookingHold]:
+    """
+    Milestone 8 (ID-046): active, unexpired holds occupy the resource
+    interval exactly like a Confirmed/Completed Booking. `expires_at >
+    now()` is checked directly here rather than relying on `status`
+    already having been flipped to "Expired" by the (periodic, not
+    instantaneous) sweep task — a lapsed hold must stop blocking new
+    bookings/holds immediately, not only after the next sweep run.
+    """
+    query = db.query(BookingHold).filter(
+        BookingHold.resource_id == resource_id,
+        BookingHold.booking_date == booking_date,
+        BookingHold.status == "Active",
+        BookingHold.expires_at > datetime.utcnow(),
+    )
+    if exclude_hold_id is not None:
+        query = query.filter(BookingHold.id != exclude_hold_id)
+    return query.all()
+
+
 def _resource_bookings_count_for_date(
     db: Session, resource_id: int, booking_date: date, exclude_booking_id: Optional[int] = None
 ) -> int:
@@ -232,10 +283,22 @@ def _resource_is_free(
     start_time: time,
     duration_minutes: int,
     exclude_booking_id: Optional[int] = None,
+    exclude_hold_id: Optional[int] = None,
 ) -> bool:
     """
     Working hours + break window + buffer-padded overlap + daily cap
     (ID-013's stored Resource attributes, enforced here per ID-013/ID-037).
+
+    Milestone 8 (ID-046): occupancy now also includes active, unexpired
+    BookingHolds, with the identical buffer-padded overlap check used for
+    Bookings — a hold blocks a booking, a booking blocks a hold, and a hold
+    blocks another hold. `Resource.booking_buffer_minutes` padding applies
+    uniformly to both; the GiST exclusion constraints added in Phase 1B are
+    defense-in-depth only and do not themselves enforce buffer semantics —
+    this function (called under `_acquire_resource_lock`, see callers) is
+    the authoritative check. `max_bookings_per_day` intentionally still
+    counts only actual Bookings, not in-progress holds, since a hold may
+    expire without ever becoming one.
     """
     window = _resource_working_window(db, resource.id, booking_date.weekday())
     if window is None:
@@ -258,6 +321,10 @@ def _resource_is_free(
     buffer_minutes = resource.booking_buffer_minutes or 0
     for existing in _existing_bookings_for_resource_date(db, resource.id, booking_date, exclude_booking_id):
         if _overlaps_with_buffer(start_m, end_m, _minutes(existing.start_time), _minutes(existing.end_time), buffer_minutes):
+            return False
+
+    for hold in _existing_active_holds_for_resource_date(db, resource.id, booking_date, exclude_hold_id):
+        if _overlaps_with_buffer(start_m, end_m, _minutes(hold.start_time), _minutes(hold.end_time), buffer_minutes):
             return False
 
     return True
@@ -330,7 +397,21 @@ def _resolve_resource_for_booking(
     duration_minutes: int,
     resource_id: Optional[int],
     exclude_booking_id: Optional[int] = None,
+    exclude_hold_id: Optional[int] = None,
 ) -> Resource:
+    """
+    Milestone 8 (ID-046/ID-056): acquires `_acquire_resource_lock` for each
+    candidate resource *before* checking `_resource_is_free`, and does not
+    release it until the caller's surrounding transaction commits or rolls
+    back (the lock is transaction-scoped, not statement-scoped) — by the
+    time this function returns a Resource, the caller's subsequent
+    `db.add(...); db.commit()` for the new Booking/BookingHold is still
+    covered by the same lock, closing the "check availability -> insert
+    later" race for good. Candidates are tried in the existing, already
+    deterministic `_eligible_resource_ids` order (by Resource.id), so
+    concurrent callers acquire locks in the same order and cannot deadlock
+    against each other.
+    """
     eligible_ids = _eligible_resource_ids(db, branch_service)
     if not eligible_ids:
         raise HTTPException(status_code=409, detail="No eligible resources are configured for this service")
@@ -340,14 +421,16 @@ def _resolve_resource_for_booking(
         if resource_id not in eligible_ids:
             raise HTTPException(status_code=400, detail="Resource is not eligible for this service")
         resource = get_resource_or_404(db, resource_id)
-        if not _resource_is_free(db, resource, booking_date, start_time, duration_minutes, exclude_booking_id):
+        _acquire_resource_lock(db, resource.id, booking_date)
+        if not _resource_is_free(db, resource, booking_date, start_time, duration_minutes, exclude_booking_id, exclude_hold_id):
             raise HTTPException(status_code=409, detail="Resource is not available at the requested time")
         return resource
 
     # Automatic "First Available" (ID-039, TAS Part 4 §4 — V1's only algorithm).
     for candidate_id in eligible_ids:
         candidate = get_resource_or_404(db, candidate_id)
-        if _resource_is_free(db, candidate, booking_date, start_time, duration_minutes, exclude_booking_id):
+        _acquire_resource_lock(db, candidate.id, booking_date)
+        if _resource_is_free(db, candidate, booking_date, start_time, duration_minutes, exclude_booking_id, exclude_hold_id):
             return candidate
     raise HTTPException(status_code=409, detail="No resource is available at the requested time")
 
@@ -685,6 +768,7 @@ def reassign_booking_resource(db: Session, booking_id: int, payload, current_use
         raise HTTPException(status_code=400, detail="Resource must belong to the same branch")
     if new_resource.id not in _eligible_resource_ids(db, branch_service):
         raise HTTPException(status_code=400, detail="Resource Category is not allowed for this service")
+    _acquire_resource_lock(db, new_resource.id, booking.booking_date)  # ID-046/ID-056
     if not _resource_is_free(db, new_resource, booking.booking_date, booking.start_time, duration_minutes, exclude_booking_id=booking.id):
         raise HTTPException(status_code=409, detail="Resource is not available at the booking's scheduled time")
 
