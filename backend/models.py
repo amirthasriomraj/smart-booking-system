@@ -751,6 +751,16 @@ class BookingHistory(Base):
     `ServiceApproval`'s existing snapshot pattern, so a single reschedule
     entry can show both the date and resource change together in one record
     (PRD §19.3's worked example shows exactly this).
+
+    `performed_by` is nullable (Milestone 8 Phase 5-7 addition, ID-048):
+    NULL represents the system actor for the automatic 48-hour
+    balance-default cancellation — the platform's first
+    system-triggered lifecycle transition, which by definition has no
+    human user to attribute it to. Every other action (Created,
+    Rescheduled, ResourceReassigned, Cancelled by a person, Completed)
+    continues to always supply a real user id. Mirrors the nullable
+    `AuditLog.performed_by` above, which already exists for the same
+    system-action reason.
     """
     __tablename__ = "booking_history"
 
@@ -762,7 +772,7 @@ class BookingHistory(Base):
     previous_state = Column(JSONVariant, nullable=True)
     new_state = Column(JSONVariant, nullable=True)
 
-    performed_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    performed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     performed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
@@ -1068,6 +1078,13 @@ class Refund(Base):
     trail required by rule 16 without silently replacing the
     system-calculated figure. `platform_fee_reversal_amount` is the ID-051
     proportional platform-fee reversal for this refund.
+
+    `booking_id` is nullable (Phase 5-7 addition): the ID-056
+    payment-succeeds-after-hold-expiry exceptional path captures money
+    against a `BookingHold` that never became a `Booking` (the slot was
+    lost in the interim) — the automatic refund issued for that captured
+    payment has no Booking to reference. Every other refund path (Phase 8+
+    cancellation/reschedule refunds) always has a real booking_id.
     """
     __tablename__ = "refunds"
 
@@ -1076,7 +1093,8 @@ class Refund(Base):
     business_id = Column(Integer, ForeignKey("businesses.id"), nullable=False, index=True)
     branch_id = Column(Integer, ForeignKey("branches.id"), nullable=False, index=True)
     # ondelete="CASCADE": dependent record of one Booking, matching BookingHistory.booking_id.
-    booking_id = Column(Integer, ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False, index=True)
+    # nullable: see docstring (ID-056 lost-hold refund has no Booking).
+    booking_id = Column(Integer, ForeignKey("bookings.id", ondelete="CASCADE"), nullable=True, index=True)
     payment_id = Column(Integer, ForeignKey("payments.id"), nullable=False, index=True)
 
     calculated_amount = Column(Numeric(10, 2), nullable=False)

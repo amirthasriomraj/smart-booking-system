@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from database import SessionLocal
 from models import RazorpayWebhookEvent
 from services import razorpay_service
+import crud_payment
 
 router = APIRouter(tags=["Payments Webhook"])
 
@@ -80,6 +81,16 @@ async def razorpay_webhook(
         # already satisfies idempotency, nothing left for this request to do.
         db.rollback()
         return {"status": "ok", "duplicate": True}
+
+    # Phase 5-7: reconcile the Payment this event refers to, if any (staff
+    # emailed-payment-link flow's sole completion path; defense-in-depth
+    # for order-based flows whose client /verify call never arrived).
+    # Never lets a reconciliation error mask the webhook's own successful,
+    # idempotent receipt — Razorpay must still get a 200 for the event.
+    try:
+        crud_payment.reconcile_webhook_event(db, event_type, payload)
+    except Exception:
+        pass
 
     event.processing_status = "Processed"
     event.processed_at = datetime.utcnow()

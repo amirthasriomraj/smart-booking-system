@@ -241,6 +241,40 @@ def _existing_bookings_for_resource_date(
     return query.all()
 
 
+def _expire_stale_holds_for_resource_date(db: Session, resource_id: int, booking_date: date) -> None:
+    """
+    Milestone 8 Phase 5-7 correctness fix: `excl_booking_holds_no_overlap`
+    (the Phase 1B GiST exclusion constraint) has predicate `WHERE status =
+    'Active'` — it has no knowledge of `expires_at`. A hold that has
+    lapsed but not yet been flipped to Expired by the periodic sweep
+    (`crud_hold.sweep_expired_holds`) is therefore still "Active" as far as
+    the database constraint is concerned, even though application-level
+    occupancy checks (`_existing_active_holds_for_resource_date`) already
+    correctly ignore it via `expires_at > now()`. Left unresolved, this
+    mismatch would make the database reject a new hold insert that
+    application logic correctly judged as a free slot.
+
+    Called immediately after `_acquire_resource_lock` for the same
+    resource/date, so this expire-then-insert sequence is itself race-free.
+    Per explicit instruction, correctness must not depend on the periodic
+    sweep task ever running — this closes that gap inline, every time.
+    """
+    stale = (
+        db.query(BookingHold)
+        .filter(
+            BookingHold.resource_id == resource_id,
+            BookingHold.booking_date == booking_date,
+            BookingHold.status == "Active",
+            BookingHold.expires_at <= datetime.utcnow(),
+        )
+        .all()
+    )
+    for hold in stale:
+        hold.status = "Expired"
+    if stale:
+        db.flush()
+
+
 def _existing_active_holds_for_resource_date(
     db: Session, resource_id: int, booking_date: date, exclude_hold_id: Optional[int] = None
 ) -> List[BookingHold]:
@@ -422,6 +456,7 @@ def _resolve_resource_for_booking(
             raise HTTPException(status_code=400, detail="Resource is not eligible for this service")
         resource = get_resource_or_404(db, resource_id)
         _acquire_resource_lock(db, resource.id, booking_date)
+        _expire_stale_holds_for_resource_date(db, resource.id, booking_date)
         if not _resource_is_free(db, resource, booking_date, start_time, duration_minutes, exclude_booking_id, exclude_hold_id):
             raise HTTPException(status_code=409, detail="Resource is not available at the requested time")
         return resource
@@ -430,6 +465,7 @@ def _resolve_resource_for_booking(
     for candidate_id in eligible_ids:
         candidate = get_resource_or_404(db, candidate_id)
         _acquire_resource_lock(db, candidate.id, booking_date)
+        _expire_stale_holds_for_resource_date(db, candidate.id, booking_date)
         if _resource_is_free(db, candidate, booking_date, start_time, duration_minutes, exclude_booking_id, exclude_hold_id):
             return candidate
     raise HTTPException(status_code=409, detail="No resource is available at the requested time")
@@ -769,6 +805,7 @@ def reassign_booking_resource(db: Session, booking_id: int, payload, current_use
     if new_resource.id not in _eligible_resource_ids(db, branch_service):
         raise HTTPException(status_code=400, detail="Resource Category is not allowed for this service")
     _acquire_resource_lock(db, new_resource.id, booking.booking_date)  # ID-046/ID-056
+    _expire_stale_holds_for_resource_date(db, new_resource.id, booking.booking_date)
     if not _resource_is_free(db, new_resource, booking.booking_date, booking.start_time, duration_minutes, exclude_booking_id=booking.id):
         raise HTTPException(status_code=409, detail="Resource is not available at the booking's scheduled time")
 

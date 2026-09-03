@@ -184,6 +184,155 @@ Your booking for "{service_name}" at {branch_name} ({business_name}) on {booking
         server.send_message(msg)
 
 
+def send_deposit_confirmation_email(
+    email: str, business_name: str, branch_name: str, service_name: str, booking_date, start_time,
+    total_amount, deposit_amount, balance_due, balance_due_at,
+):
+    """Milestone 8 rule 7 — deposit-specific confirmation, distinct from the
+    normal fully-paid confirmation, spelling out the balance/deadline/
+    forfeiture consequence up front."""
+    msg = EmailMessage()
+    msg["Subject"] = f"Deposit received — booking confirmed at {business_name}"
+    msg["From"] = settings.EMAIL_FROM
+    msg["To"] = email
+
+    msg.set_content(
+        f"""
+Hello,
+
+Your booking for "{service_name}" at {branch_name} ({business_name}) is confirmed with a deposit.
+
+Date: {booking_date}
+Time: {start_time}
+
+Total booking amount: Rs. {total_amount}
+Deposit paid: Rs. {deposit_amount}
+Remaining balance: Rs. {balance_due}
+Balance due by: {balance_due_at}
+
+You will receive a reminder 72 hours before your appointment with a payment link. If the remaining
+balance is not paid by 48 hours before your appointment, your booking will be automatically
+cancelled and the deposit will not be refunded.
+
+Cancellation and reschedule policies apply as communicated at the time of booking.
+"""
+    )
+
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        server.starttls()
+        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.send_message(msg)
+
+
+def send_balance_reminder_email(
+    email: str, business_name: str, branch_name: str, service_name: str, booking_date, start_time,
+    balance_due, balance_due_at, payment_link: str = None,
+):
+    """Milestone 8 rule 6 — fires once, 72 hours before the appointment."""
+    msg = EmailMessage()
+    msg["Subject"] = f"Balance payment due — {business_name}"
+    msg["From"] = settings.EMAIL_FROM
+    msg["To"] = email
+
+    link_line = f"\nPay now: {payment_link}\n" if payment_link else ""
+
+    msg.set_content(
+        f"""
+Hello,
+
+Your appointment for "{service_name}" at {branch_name} ({business_name}) is coming up.
+
+Date: {booking_date}
+Time: {start_time}
+
+Remaining balance due: Rs. {balance_due}
+Payment deadline: {balance_due_at}
+{link_line}
+If the remaining balance is not paid by the deadline above, your booking will be automatically
+cancelled and your deposit will not be refunded.
+"""
+    )
+
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        server.starttls()
+        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.send_message(msg)
+
+
+def send_balance_paid_confirmation_email(email: str, business_name: str, branch_name: str, service_name: str, booking_date, start_time):
+    """Milestone 8 rule 7 — sent once the remaining balance is fully paid."""
+    msg = EmailMessage()
+    msg["Subject"] = f"Booking fully paid — {business_name}"
+    msg["From"] = settings.EMAIL_FROM
+    msg["To"] = email
+
+    msg.set_content(
+        f"""
+Hello,
+
+Your remaining balance for "{service_name}" at {branch_name} ({business_name}) has been received.
+Your booking is now fully paid and confirmed.
+
+Date: {booking_date}
+Time: {start_time}
+"""
+    )
+
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        server.starttls()
+        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.send_message(msg)
+
+
+def send_balance_default_cancellation_email(email: str, business_name: str, branch_name: str, service_name: str, booking_date, start_time):
+    """Milestone 8 rule 6/ID-048 — the automatic 48-hour balance-default
+    cancellation notice, including the deposit-forfeiture consequence."""
+    msg = EmailMessage()
+    msg["Subject"] = f"Booking automatically cancelled — {business_name}"
+    msg["From"] = settings.EMAIL_FROM
+    msg["To"] = email
+
+    msg.set_content(
+        f"""
+Hello,
+
+Your booking for "{service_name}" at {branch_name} ({business_name}), scheduled for {booking_date} {start_time},
+has been automatically cancelled because the remaining balance was not paid by the deadline.
+
+Your security deposit has been forfeited and is not refundable in this case, per the balance
+payment policy communicated at the time of booking.
+"""
+    )
+
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        server.starttls()
+        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.send_message(msg)
+
+
+def send_payment_link_email(email: str, business_name: str, service_name: str, amount, payment_link: str):
+    """Business rule 12.B — staff-emailed payment link."""
+    msg = EmailMessage()
+    msg["Subject"] = f"Complete your payment — {business_name}"
+    msg["From"] = settings.EMAIL_FROM
+    msg["To"] = email
+
+    msg.set_content(
+        f"""
+Hello,
+
+Please complete your payment of Rs. {amount} for "{service_name}" at {business_name} using the link below:
+
+{payment_link}
+"""
+    )
+
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        server.starttls()
+        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.send_message(msg)
+
+
 def send_staff_invitation_email(email: str, token: str, role_code: str, business_name: str):
 
     accept_link = f"{settings.FRONTEND_BASE_URL}/accept-invitation?token={token}"

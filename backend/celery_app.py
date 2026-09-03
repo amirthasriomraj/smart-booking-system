@@ -1,11 +1,13 @@
 """
-Celery application foundation (Milestone 8 — ID-049).
+Celery application foundation (Milestone 8 — ID-049), with the Phase 7
+scheduled business-flow tasks registered:
 
-This is infrastructure only: no M8 business-flow tasks (balance reminders,
-the 48-hour balance-deadline sweep, hold-expiry cleanup, etc.) are
-registered yet — those are added in their respective M8 business-flow
-phases. `tasks/health.py` provides one trivial task solely to verify the
-worker/beat wiring end-to-end.
+- `tasks.balance_reminders.send_due_balance_reminders` — rule 6's 72-hour
+  reminder.
+- `tasks.balance_deadline.enforce_balance_deadlines` — rule 6/ID-048's
+  48-hour automatic cancellation/deposit forfeiture.
+- `tasks.hold_expiry.sweep_expired_holds` — periodic status-accuracy
+  cleanup only; not required for correctness (see that task's docstring).
 
 Per ID-049, the database remains authoritative: a scheduled task firing is
 a trigger to re-read and validate current DB state, never a command to
@@ -22,7 +24,7 @@ celery_app = Celery(
     "smart_booking_system",
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_RESULT_BACKEND,
-    include=["tasks.health"],
+    include=["tasks.health", "tasks.balance_reminders", "tasks.balance_deadline", "tasks.hold_expiry"],
 )
 
 celery_app.conf.update(
@@ -37,7 +39,22 @@ celery_app.conf.update(
     # and avoids losing a task if a worker dies mid-run.
     task_acks_late=True,
     worker_prefetch_multiplier=1,
-    # M8 business-flow phases (72h reminder, 48h sweep, hold-expiry cleanup)
-    # register their schedules here; intentionally empty in Phase 0.
-    beat_schedule={},
+    beat_schedule={
+        # Reminder/deadline windows are hour-granularity (rule 6); a
+        # 5-minute cadence keeps both comfortably inside their windows
+        # without excessive polling. Hold expiry runs a bit more often
+        # since holds only last 6-10 minutes.
+        "send-due-balance-reminders": {
+            "task": "tasks.balance_reminders.send_due_balance_reminders",
+            "schedule": 300.0,
+        },
+        "enforce-balance-deadlines": {
+            "task": "tasks.balance_deadline.enforce_balance_deadlines",
+            "schedule": 300.0,
+        },
+        "sweep-expired-holds": {
+            "task": "tasks.hold_expiry.sweep_expired_holds",
+            "schedule": 60.0,
+        },
+    },
 )
