@@ -572,3 +572,169 @@ This does not change ID-037: application-level interval-overlap validation (cove
 
 **Reason:**
 Found during Milestone 7 implementation testing: a test rebooking a resource/slot immediately after cancelling the booking that previously held it failed with a database `IntegrityError`, even though the application-level availability logic correctly reported the slot as free. Tracing the failure showed the plain unique constraint as literally specified was stricter than, and inconsistent with, the already-approved ID-037 application logic and PRD §20/§80's explicit release-on-cancellation requirement. A partial index is the minimal fix: it preserves the constraint's defense-in-depth purpose for live bookings without resurrecting the contradiction, and reuses a pattern (partial unique index via `postgresql_where`/`sqlite_where`) already established in this codebase for exactly this kind of "unique among the currently-relevant rows only" requirement.
+
+---
+
+## ID-044 — Milestone 8 (Payments, Financial Policies & Promotions) Is Promoted From Deferred/V2 Scope Into V1
+
+**Decision:**
+Online Payments (Razorpay), Deposits, Security-Deposit Balance Collection, Coupons/Promotions, Refunds, Manual Price Overrides, and the associated discount/refund approval and override workflows are explicitly promoted from the frozen documents' Version 2 / deferred scope into Version 1, as Milestone 8. This is a deliberate, user-approved scope change, not a reinterpretation of existing text.
+
+This supersedes, for M8's functionality only, the V1-exclusion/deferral statements in:
+
+- PRD §7 "Out of Scope (Version 1)" — "Online payment gateways"
+- PRD §60–61 "Version 1 Scope" / "Version 2 Roadmap" — Payments, Coupons & Promotions
+- PRD §67 "Out of Scope for Version 1" — Online payments, Coupons, Loyalty programs
+- PRD §92 "Constraints" — "Online Payments"
+- PRD §25.6 "Future Approval Workflows" — Discount approval, Refund approval (where M8 implements Refund Override and branch-coupon approval)
+- TAS §9 "Technical Debt" — "Online Payments"
+
+No other V2/deferred item (Loyalty programs, Memberships, SMS, WhatsApp, subscription billing, multi-currency, etc.) is promoted. The frozen PRD and TAS remain the historical V1 baseline document and are not rewritten; this decision, together with ID-045 through ID-056, is the authoritative record of what M8 changes and why, following the precedent already established by ID-028 and ID-035 for resolving frozen-document conflicts via this log rather than by editing frozen text.
+
+**Reason:**
+Resolved during M8 pre-freeze audit and explicit user decision. The audit (see M8 audit report) identified a direct, four-section conflict between the proposed M8 business rules and the frozen PRD/TAS V1-exclusion language. The user weighed this and explicitly approved the scope move rather than deferring M8 to a future version.
+
+---
+
+## ID-045 — Booking Lifecycle Remains Separate From Financial State
+
+**Decision:**
+`Booking.status` remains the existing V1 three-value lifecycle (`Confirmed` / `Completed` / `Cancelled`, per PRD §18.5/TAS Part 4 §2) and is **not** extended with payment-specific values such as "Pending Payment," "Deposit Paid," "Partially Paid," or "Refunded." Financial/payment state (e.g., deposit paid vs. balance outstanding vs. paid in full) is tracked on a separate financial-state representation associated with the booking, not folded into `Booking.status`. A booking can therefore be `Confirmed` while its financial state is, for example, "Deposit Paid / Balance Outstanding." The exact financial-state schema is designed in the M8 implementation plan, not fixed here.
+
+**Reason:**
+Resolved during M8 pre-freeze audit follow-up per explicit user decision, to avoid overloading the booking scheduling lifecycle (which every existing booking-validation, history, and authorization code path already keys off) with financial concerns, keeping the two lifecycles independently evolvable — consistent with the platform's established pattern of keeping orthogonal lifecycle flags separate (ID-002, ID-008, ID-014, ID-026).
+
+---
+
+## ID-046 — BookingHold Is a Separate, Database-Authoritative Domain Concept
+
+**Decision:**
+A checkout/payment hold is represented by a new, dedicated, persistent entity (a "BookingHold" concept) — not a provisional `Booking` row, and not a Redis-only reservation. A hold conceptually carries: business, branch, service, resource, customer (where applicable), booking date, start/end time, an authoritative `expires_at`, hold state, and an association to the relevant payment attempt/order/link where applicable. PostgreSQL is the source of truth for hold existence/validity; Redis may be used to assist execution/performance (e.g., fast expiry checks) but must never be the sole record of a hold's existence or terms.
+
+Availability is computed as: eligible resource interval − active (Confirmed/Completed) bookings − active, unexpired holds. Hold acquisition must be concurrency-safe, using the same class of database-level protection (e.g., unique/partial-index or row-locking) already established for booking overlap (ID-037, ID-043) — a hold must occupy the same slot-uniqueness space a booking does, so two concurrent holds (or a hold and a booking) can never coexist for an overlapping resource interval.
+
+Hold durations by origin (frozen for V1):
+
+- Customer self-checkout: 6 minutes
+- Staff interactive/walk-in checkout: 10 minutes
+- Staff emailed payment-link checkout: 10 minutes
+- Staff direct external-payment instruction (no email): 10 minutes
+
+Exact schema (columns, indexing strategy, state enum) is proposed in the M8 implementation plan.
+
+**Reason:**
+Resolved during M8 pre-freeze audit follow-up. Modeling a hold as a fake `Confirmed` booking would corrupt booking-lifecycle reporting and every existing booking-count/history/audit code path; modeling it as Redis-only would violate the platform's existing "database state is authoritative" posture (e.g., ID-043's DB-level partial index as defense-in-depth, not merely application logic). A dedicated DB-backed entity, assisted but not replaced by Redis, is the minimal design consistent with existing precedent.
+
+---
+
+## ID-047 — ID-035 Superseded: Customer and Staff Cancellation/Reschedule Rules Diverge
+
+**Decision:**
+ID-035's statement that customer self-cancellation/reschedule use validation, history, and audit rules "identical" to staff-initiated actions is **superseded**. For M8:
+
+- **Customer self-reschedule:** allowed only ≥24 hours before the appointment; at most **one** customer self-reschedule per booking; a business-side reschedule does not consume or reset this allowance; the same Booking ID is retained; full availability revalidation remains mandatory; the M7 resource-fallback behavior (keep current resource if still eligible/free, otherwise First Available) is unchanged.
+- **Customer cancellation:** allowed per the approved M8 cancellation policy; refund consequences depend on cancellation timing and money actually paid (see the M8 business rules / implementation plan for the refund-bracket calculation), not on ID-035's flat "identical to staff" treatment.
+- **Business Owner / Branch Manager:** may cancel or reschedule a booking at any time before the appointment, any number of times, unrestricted by the customer's 24-hour/one-time limits. An override action that deviates from normal customer policy requires a reason. Authority scope is unchanged from prior milestones: Business Owner is business-wide; Branch Manager is limited to their currently assigned branch.
+
+Everything else in ID-035 (that customer self-cancel/reschedule are V1 scope at all, resolving PRD §20 vs. §35) remains in force; only the "identical rules" clause is replaced.
+
+**Reason:**
+Resolved during M8 pre-freeze audit follow-up per explicit user decision. ID-035 was written before any financial/refund or timing-restriction policy existed; M8 introduces exactly that asymmetry between customer and staff authority, which ID-035's "identical" language cannot accommodate without amendment.
+
+---
+
+## ID-048 — Automatic 48-Hour Balance-Default Cancellation (New System-Triggered Transition)
+
+**Decision:**
+M8 introduces the platform's first explicitly approved **system-triggered** (non-human-actor) Booking lifecycle transition. If a booking was created with an eligible security deposit and the remaining balance is still outstanding at the 48-hour-before-appointment deadline, the system automatically transitions that booking `Confirmed → Cancelled`, releases resource availability, forfeits the security deposit (customer refund = ₹0 for the forfeited deposit), and records the standard `BookingHistory`/`AuditLog` entries with a system actor, a reason describing the balance-default condition, and the previous/new state — followed by the required customer notification (ID-050).
+
+This decision stands on its own and does **not** reinterpret or widen `ID-041` ("Booking Completion Restricted to Business Owner / Branch Manager... no customer self-completion action and no automatic/system-triggered completion"). ID-041 remains scoped to automatic **completion** only and is unchanged; this is a separately approved automatic **cancellation** case specific to unpaid deposit balances.
+
+**Reason:**
+Resolved during M8 pre-freeze audit follow-up per explicit user decision. The audit flagged that ID-041's "no automatic transitions exist anywhere" precedent would otherwise be silently broken by this requirement; recording it as its own decision keeps ID-041 accurate as written (still true for completion) while making the new exception explicit and bounded.
+
+---
+
+## ID-049 — Background Job Infrastructure: Celery + Redis + Celery Beat
+
+**Decision:**
+M8 adds Celery (worker) + Celery Beat (scheduler) on top of the project's existing Redis instance as the platform's background/scheduled-job foundation — the "Future background processing" use TAS §7 already reserved for Redis. This infrastructure is used for, at minimum: 72-hour balance-payment reminders, 48-hour balance-deadline enforcement (ID-048), expired-hold cleanup, and other retryable financial/notification work. M9 (renumbered, see `IMPLEMENTATION_PLAN.md`) may reuse the same infrastructure for its own notification/hardening work rather than standing up a second mechanism.
+
+A scheduled task firing is a trigger to *check*, not a command to blindly act: every scheduled task must re-read and validate current database state (the authoritative source) before mutating a booking, hold, or payment, and must be safe to run more than once (idempotent) for the same logical event.
+
+**Reason:**
+Resolved during M8 pre-freeze audit follow-up per explicit user decision. No scheduler existed anywhere in the codebase prior to M8 (confirmed by audit); Celery/Redis/Beat was chosen as the concrete technology, reusing the Redis dependency the project already has rather than introducing an additional service.
+
+---
+
+## ID-050 — M8/M9 Notification Boundary and Notification Persistence
+
+**Decision:**
+M8 owns every notification directly caused by M8 financial/payment behavior, including at minimum: payment-link email, full-payment confirmation, deposit-payment confirmation, the 72-hour balance reminder, balance-paid/fully-paid confirmation, the 48-hour balance-default automatic-cancellation notice, deposit-forfeiture notice, cancellation/refund financial outcome, refund initiated/completed notices, reschedule financial-adjustment notices, and staff-side financial cancellation/reschedule notices. M9 (renumbered "V1 Notifications, Hardening & Final Integration") retains the remaining non-financial V1 notifications, general notification hardening, and final notification regression/integration verification.
+
+If reliable delivery/auditability of M8's financial notifications requires persisting notification/delivery state (the `Notifications`/`Email Logs` tables TAS Part 3 §10 defines but that were never built through M7), that persistence foundation is built in M8, not deferred to M9 — there is exactly one notification subsystem, not two.
+
+**Reason:**
+Resolved during M8 pre-freeze audit follow-up per explicit user decision, closing the milestone-boundary ambiguity the audit raised (audit finding B4/G5) before implementation planning begins.
+
+---
+
+## ID-051 — Platform Online Transaction Fee: Admin Authority, Inheritance & Per-Booking Snapshot
+
+**Decision:**
+Platform Administrator may configure the platform default online-transaction-fee percentage, configure a business-specific override, and remove a business override (returning that business to inherited default behavior). A business's *effective* rate is the override if one is set, otherwise the current platform default (inheritance, not copy-on-write). Setting, changing, or removing a business override requires a reason and is audited with actor, timestamp, previous value, and new value. This is classified as **platform commercial configuration** under PRD §26.1's Platform Administrator authority, and grants no authority over tenant bookings or normal tenant-side financial actions (price overrides, deposit overrides, refunds, cancellations remain exclusively Business Owner / Branch Manager actions).
+
+Once a booking has its first successful financial transaction, the business's then-effective platform-fee rate is snapshotted onto that booking and used for every subsequent financial event in that booking's lifecycle (balance payment, additional reschedule collection, refund fee reversal), regardless of later platform-default or business-override changes. New bookings always use the current effective rate at their own first transaction.
+
+**Reason:**
+Resolved during M8 pre-freeze audit follow-up per explicit user decision (audit finding A8/G6 on Platform Admin authority; the snapshot-at-first-transaction requirement from the M8 business rules). Grouped into one decision because inheritance, override, and snapshot are one coherent fee-configuration design rather than independent rules.
+
+---
+
+## ID-052 — Gateway/Provider Fees and Tax Are Recorded, Not Invented or Engineered, in M8
+
+**Decision:**
+M8 keeps gateway/provider financial concepts distinct from platform revenue: customer booking amount, discount, final booking amount, platform fee, platform fee reversal, provider/gateway fee, provider fee tax, transfer/Route fee, and transfer fee tax are separate fields, never combined into a single ambiguous "processing fee." M8 does not hard-code assumed Razorpay percentages (e.g., an invented gateway-fee rate); where the implemented Razorpay flow reliably reports actual fee data, it may be persisted, but no fee is fabricated. M8 does not build a settlement-reconciliation/report-ingestion pipeline unless technically required for the approved payment flow to function, and does not build a general accounting or GST/tax calculation engine — the architecture keeps tax-related fields separable/extensible, but exact production GST/invoicing treatment is explicitly out of M8 scope until confirmed separately.
+
+**Reason:**
+Resolved during M8 pre-freeze audit follow-up per explicit user decision, directly closing audit findings G7/G8 (gateway-fee sourcing and tax handling) without inventing production financial/tax behavior the frozen documents never specified.
+
+---
+
+## ID-053 — Refund Routing Follows the Original Payment Method
+
+**Decision:**
+Refund execution is routed by how the money was originally collected. A refund against an online Razorpay payment goes through the Razorpay refund flow. A refund against a cash, manual, direct UPI, direct bank-transfer, or other offline payment is performed/verified manually by authorized staff and recorded as a manual/offline refund in financial history — it never calls Razorpay. The system must distinguish "gateway refund" from "manual/offline refund" as a first-class field and must never record an offline refund as gateway-refunded. Normal refund authorization (Business Owner: business-wide; Branch Manager: assigned branch only) and the already-approved refund-override reason/audit requirements apply identically regardless of refund routing.
+
+**Reason:**
+Resolved during M8 pre-freeze audit follow-up per explicit user decision, closing audit finding G10.
+
+---
+
+## ID-054 — Active Hold Price/Terms Snapshot Is Immutable Until Expiry or Finalization
+
+**Decision:**
+When a `BookingHold` (ID-046) is successfully created, the backend snapshots the authoritative checkout calculation onto that hold: calculated/base price, any base-price override, applied coupon and discount, any final-price override, final booking amount, deposit percentage and amount due now, the effective platform-fee rate, the assigned resource, the appointment interval, and currency. For the lifetime of that active hold (6 or 10 minutes per ID-046), subsequent configuration changes elsewhere in the system — a service price change, a coupon being edited/deactivated, a platform-fee configuration change — must not alter that hold's already-snapshotted price/payment terms. If the hold expires without payment, any new checkout attempt is a fresh authoritative server-side calculation under whatever configuration is current at that later time. Security-critical eligibility (e.g., resource still valid, business/branch still active) is still revalidated at finalization even though price/terms are not recalculated.
+
+**Reason:**
+Resolved during M8 pre-freeze audit follow-up per explicit user decision, closing audit finding G9/decision 13 — without this, a mid-hold configuration change could silently change what a customer is charged between seeing a price and completing payment.
+
+---
+
+## ID-055 — Razorpay Provider Assumptions and Route Production-Eligibility Decoupling
+
+**Decision:**
+The following Razorpay platform assumptions have been checked at a high level against current Razorpay documentation and are treated as valid for M8 planning: Orders/Payments support server-driven payment flows; webhooks are asynchronous, may be delivered more than once, and may arrive out of order; Payment Links can be created via API with an expiry timestamp; Razorpay Route supports Linked Accounts and transfers, including Test Mode transfer testing. Production Route eligibility/onboarding is **not** assumed or verified as available for this platform, and M8's core domain model (Booking, BookingHold, Payment, Refund, Coupon, platform fee) must not be architecturally coupled to Route production eligibility — provider-independent business rules (refund brackets, deposit/balance timing, coupon rules, platform-fee percentage/inheritance/snapshot, who bears provider fees) are designed independently of whether Route reaches production. Razorpay Test Mode is sufficient for M8 development/integration; production Route activation is tracked as a separate deployment/onboarding prerequisite whose absence does not invalidate the domain model. Exact current Razorpay API/webhook-event names and shapes are verified during implementation planning, not assumed from general payment-gateway knowledge.
+
+**Reason:**
+Resolved during M8 pre-freeze audit follow-up per explicit user decision, closing audit finding I (Razorpay architecture assumptions) with an explicit boundary between what is confirmed, what is assumed, and what must not be assumed.
+
+---
+
+## ID-056 — Financial Concurrency and Idempotency Requirements
+
+**Decision:**
+M8 must be safe under concurrency and safe to retry. Specifically: (1) a payment that is captured by Razorpay after its `BookingHold` has already expired must never result in two overlapping confirmed bookings for the same resource interval — finalization re-validates hold validity and slot availability under lock, and if the slot was legitimately claimed elsewhere in the interim, the captured payment is recorded, no overlapping booking is created, and an appropriate refund/recovery path is initiated with the exceptional outcome audited; (2) coupon total-usage and per-customer-usage limits are enforced atomically (row-level locking or an equivalent atomic check-and-increment), not via a read-check-then-later-increment sequence, so concurrent checkouts cannot exceed configured limits; (3) idempotent processing is required for checkout/payment-attempt creation, Razorpay webhook handling, payment finalization, refund creation/processing, the scheduled 48-hour balance-default job (ID-048), and any other retryable action that could move money or duplicate state — provider event/payment/refund identifiers are persisted and used as idempotency keys; in-memory-only idempotency is not acceptable. Exact transactional/locking design is proposed in the M8 implementation plan.
+
+**Reason:**
+Resolved during M8 pre-freeze audit follow-up per explicit user decision, closing audit findings H (double booking, payment-after-expiry, duplicate webhooks/refunds, coupon races) and G-adjacent idempotency gaps with concrete, binding requirements rather than leaving them as open risks for the implementation plan to rediscover.
