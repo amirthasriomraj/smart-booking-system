@@ -1,7 +1,9 @@
 import json
 from datetime import datetime, date, time
+from decimal import Decimal
 from typing import List, Optional, Tuple
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
 
@@ -22,6 +24,8 @@ from models import (
     BusinessCustomer,
     Booking,
     BookingHistory,
+    BookingHold,
+    BookingFinancial,
 )
 from audit import write_audit
 from crud_branch import get_branch_by_id
@@ -188,6 +192,33 @@ def _overlaps_with_buffer(candidate_start: int, candidate_end: int, existing_sta
     return candidate_start < padded_end and padded_start < candidate_end
 
 
+def _acquire_resource_lock(db: Session, resource_id: int, booking_date: date) -> None:
+    """
+    Milestone 8 (ID-046/ID-056): transaction-scoped PostgreSQL advisory lock
+    serializing every check-then-act availability sequence for one
+    resource/date, across both `Booking` and `BookingHold` creation,
+    reschedule, and manual reassignment. This is the *authoritative*
+    concurrency mechanism (GiST exclusion constraints added in Phase 1B are
+    defense-in-depth only, and do not by themselves prevent a Booking from
+    overlapping a BookingHold).
+
+    `pg_advisory_xact_lock` is automatically released at COMMIT or ROLLBACK
+    — no matching unlock call is needed. `date_key` scopes the lock to one
+    calendar day per resource, so unrelated dates for the same resource
+    never contend.
+
+    No-op on SQLite (the test suite's dialect — see tests/conftest.py):
+    SQLite has no advisory-lock concept and no real concurrent connections
+    in-process, so there is nothing to serialize there. This mirrors the
+    existing dual-dialect pattern used elsewhere in this codebase (e.g.
+    JSONVariant, postgresql_where/sqlite_where).
+    """
+    if db.bind.dialect.name != "postgresql":
+        return
+    date_key = (booking_date - date(1970, 1, 1)).days
+    db.execute(text("SELECT pg_advisory_xact_lock(:resource_id, :date_key)"), {"resource_id": resource_id, "date_key": date_key})
+
+
 def _resource_working_window(db: Session, resource_id: int, weekday: int):
     row = (
         db.query(ResourceWorkingHours)
@@ -212,6 +243,62 @@ def _existing_bookings_for_resource_date(
     return query.all()
 
 
+def _expire_stale_holds_for_resource_date(db: Session, resource_id: int, booking_date: date) -> None:
+    """
+    Milestone 8 Phase 5-7 correctness fix: `excl_booking_holds_no_overlap`
+    (the Phase 1B GiST exclusion constraint) has predicate `WHERE status =
+    'Active'` — it has no knowledge of `expires_at`. A hold that has
+    lapsed but not yet been flipped to Expired by the periodic sweep
+    (`crud_hold.sweep_expired_holds`) is therefore still "Active" as far as
+    the database constraint is concerned, even though application-level
+    occupancy checks (`_existing_active_holds_for_resource_date`) already
+    correctly ignore it via `expires_at > now()`. Left unresolved, this
+    mismatch would make the database reject a new hold insert that
+    application logic correctly judged as a free slot.
+
+    Called immediately after `_acquire_resource_lock` for the same
+    resource/date, so this expire-then-insert sequence is itself race-free.
+    Per explicit instruction, correctness must not depend on the periodic
+    sweep task ever running — this closes that gap inline, every time.
+    """
+    stale = (
+        db.query(BookingHold)
+        .filter(
+            BookingHold.resource_id == resource_id,
+            BookingHold.booking_date == booking_date,
+            BookingHold.status == "Active",
+            BookingHold.expires_at <= datetime.utcnow(),
+        )
+        .all()
+    )
+    for hold in stale:
+        hold.status = "Expired"
+    if stale:
+        db.flush()
+
+
+def _existing_active_holds_for_resource_date(
+    db: Session, resource_id: int, booking_date: date, exclude_hold_id: Optional[int] = None
+) -> List[BookingHold]:
+    """
+    Milestone 8 (ID-046): active, unexpired holds occupy the resource
+    interval exactly like a Confirmed/Completed Booking. `expires_at >
+    now()` is checked directly here rather than relying on `status`
+    already having been flipped to "Expired" by the (periodic, not
+    instantaneous) sweep task — a lapsed hold must stop blocking new
+    bookings/holds immediately, not only after the next sweep run.
+    """
+    query = db.query(BookingHold).filter(
+        BookingHold.resource_id == resource_id,
+        BookingHold.booking_date == booking_date,
+        BookingHold.status == "Active",
+        BookingHold.expires_at > datetime.utcnow(),
+    )
+    if exclude_hold_id is not None:
+        query = query.filter(BookingHold.id != exclude_hold_id)
+    return query.all()
+
+
 def _resource_bookings_count_for_date(
     db: Session, resource_id: int, booking_date: date, exclude_booking_id: Optional[int] = None
 ) -> int:
@@ -232,10 +319,22 @@ def _resource_is_free(
     start_time: time,
     duration_minutes: int,
     exclude_booking_id: Optional[int] = None,
+    exclude_hold_id: Optional[int] = None,
 ) -> bool:
     """
     Working hours + break window + buffer-padded overlap + daily cap
     (ID-013's stored Resource attributes, enforced here per ID-013/ID-037).
+
+    Milestone 8 (ID-046): occupancy now also includes active, unexpired
+    BookingHolds, with the identical buffer-padded overlap check used for
+    Bookings — a hold blocks a booking, a booking blocks a hold, and a hold
+    blocks another hold. `Resource.booking_buffer_minutes` padding applies
+    uniformly to both; the GiST exclusion constraints added in Phase 1B are
+    defense-in-depth only and do not themselves enforce buffer semantics —
+    this function (called under `_acquire_resource_lock`, see callers) is
+    the authoritative check. `max_bookings_per_day` intentionally still
+    counts only actual Bookings, not in-progress holds, since a hold may
+    expire without ever becoming one.
     """
     window = _resource_working_window(db, resource.id, booking_date.weekday())
     if window is None:
@@ -258,6 +357,10 @@ def _resource_is_free(
     buffer_minutes = resource.booking_buffer_minutes or 0
     for existing in _existing_bookings_for_resource_date(db, resource.id, booking_date, exclude_booking_id):
         if _overlaps_with_buffer(start_m, end_m, _minutes(existing.start_time), _minutes(existing.end_time), buffer_minutes):
+            return False
+
+    for hold in _existing_active_holds_for_resource_date(db, resource.id, booking_date, exclude_hold_id):
+        if _overlaps_with_buffer(start_m, end_m, _minutes(hold.start_time), _minutes(hold.end_time), buffer_minutes):
             return False
 
     return True
@@ -330,7 +433,21 @@ def _resolve_resource_for_booking(
     duration_minutes: int,
     resource_id: Optional[int],
     exclude_booking_id: Optional[int] = None,
+    exclude_hold_id: Optional[int] = None,
 ) -> Resource:
+    """
+    Milestone 8 (ID-046/ID-056): acquires `_acquire_resource_lock` for each
+    candidate resource *before* checking `_resource_is_free`, and does not
+    release it until the caller's surrounding transaction commits or rolls
+    back (the lock is transaction-scoped, not statement-scoped) — by the
+    time this function returns a Resource, the caller's subsequent
+    `db.add(...); db.commit()` for the new Booking/BookingHold is still
+    covered by the same lock, closing the "check availability -> insert
+    later" race for good. Candidates are tried in the existing, already
+    deterministic `_eligible_resource_ids` order (by Resource.id), so
+    concurrent callers acquire locks in the same order and cannot deadlock
+    against each other.
+    """
     eligible_ids = _eligible_resource_ids(db, branch_service)
     if not eligible_ids:
         raise HTTPException(status_code=409, detail="No eligible resources are configured for this service")
@@ -340,14 +457,18 @@ def _resolve_resource_for_booking(
         if resource_id not in eligible_ids:
             raise HTTPException(status_code=400, detail="Resource is not eligible for this service")
         resource = get_resource_or_404(db, resource_id)
-        if not _resource_is_free(db, resource, booking_date, start_time, duration_minutes, exclude_booking_id):
+        _acquire_resource_lock(db, resource.id, booking_date)
+        _expire_stale_holds_for_resource_date(db, resource.id, booking_date)
+        if not _resource_is_free(db, resource, booking_date, start_time, duration_minutes, exclude_booking_id, exclude_hold_id):
             raise HTTPException(status_code=409, detail="Resource is not available at the requested time")
         return resource
 
     # Automatic "First Available" (ID-039, TAS Part 4 §4 — V1's only algorithm).
     for candidate_id in eligible_ids:
         candidate = get_resource_or_404(db, candidate_id)
-        if _resource_is_free(db, candidate, booking_date, start_time, duration_minutes, exclude_booking_id):
+        _acquire_resource_lock(db, candidate.id, booking_date)
+        _expire_stale_holds_for_resource_date(db, candidate.id, booking_date)
+        if _resource_is_free(db, candidate, booking_date, start_time, duration_minutes, exclude_booking_id, exclude_hold_id):
             return candidate
     raise HTTPException(status_code=409, detail="No resource is available at the requested time")
 
@@ -561,6 +682,24 @@ def reschedule_booking(db: Session, booking_id: int, payload, current_user: User
 
     _require_active_status(booking)
 
+    # Milestone 8 Phase 8 (ID-047): customer self-reschedule is capped at
+    # >=24h notice and once per booking; business-side reschedule remains
+    # unrestricted in timing/frequency. Manual-acceptance follow-up: a
+    # staff reschedule (Owner or Branch Manager) must ALWAYS supply a
+    # non-empty reason — not only when it overrides the customer policy —
+    # per the clarification recorded in IMPLEMENTATION_DECISIONS.md.
+    # Customer self-reschedule is unchanged: no reason is required.
+    appointment_dt = datetime.combine(booking.booking_date, booking.start_time)
+    hours_until_appointment = (appointment_dt - datetime.utcnow()).total_seconds() / 3600.0
+
+    if actor_is_customer:
+        if hours_until_appointment < 24:
+            raise HTTPException(status_code=409, detail="Reschedule requires at least 24 hours' notice")
+        if booking.customer_reschedule_count >= 1:
+            raise HTTPException(status_code=409, detail="You have already used your one self-reschedule for this booking")
+    elif not (getattr(payload, "reason", None) or "").strip():
+        raise HTTPException(status_code=400, detail="A reason is required to reschedule this booking")
+
     branch_service = get_branch_service_or_404(db, booking.branch_service_id)
     _check_bookable_state(business, branch, branch_service)  # §19.2: re-validate availability
 
@@ -603,6 +742,8 @@ def reschedule_booking(db: Session, booking_id: int, payload, current_user: User
     booking.start_time = payload.start_time
     booking.end_time = _minutes_to_time(_minutes(payload.start_time) + duration_minutes)
     booking.resource_id = resource.id
+    if actor_is_customer:
+        booking.customer_reschedule_count += 1
 
     new_state = _booking_state_snapshot(booking)
 
@@ -617,6 +758,7 @@ def reschedule_booking(db: Session, booking_id: int, payload, current_user: User
         performed_by=current_user.id,
         previous_value=_state_to_audit_string(previous_state),
         new_value=_state_to_audit_string(new_state),
+        reason=getattr(payload, "reason", None),
         commit=False,
     )
 
@@ -638,6 +780,16 @@ def cancel_booking(db: Session, booking_id: int, payload, current_user: User, *,
         _require_owning_customer(db, booking, current_user)
     else:
         _require_branch_booking_staff_access(db, branch, current_user)
+        # Manual-acceptance follow-up: a staff cancellation (Owner or
+        # Branch Manager) must ALWAYS supply a non-empty cancellation
+        # reason — per the clarification recorded in
+        # IMPLEMENTATION_DECISIONS.md. This is independent of, and does
+        # not replace, the separate refund-override-reason requirement
+        # enforced in crud_payment._apply_cancellation_refund when
+        # refund_override_amount is used. Customer self-cancel is
+        # unchanged: no reason is required (PRD §20 baseline).
+        if not (getattr(payload, "reason", None) or "").strip():
+            raise HTTPException(status_code=400, detail="A reason is required to cancel this booking")
 
     _require_active_status(booking)
 
@@ -685,6 +837,8 @@ def reassign_booking_resource(db: Session, booking_id: int, payload, current_use
         raise HTTPException(status_code=400, detail="Resource must belong to the same branch")
     if new_resource.id not in _eligible_resource_ids(db, branch_service):
         raise HTTPException(status_code=400, detail="Resource Category is not allowed for this service")
+    _acquire_resource_lock(db, new_resource.id, booking.booking_date)  # ID-046/ID-056
+    _expire_stale_holds_for_resource_date(db, new_resource.id, booking.booking_date)
     if not _resource_is_free(db, new_resource, booking.booking_date, booking.start_time, duration_minutes, exclude_booking_id=booking.id):
         raise HTTPException(status_code=409, detail="Resource is not available at the booking's scheduled time")
 
@@ -818,6 +972,32 @@ def get_booking_for_customer(db: Session, booking_id: int, current_user: User) -
 # SERIALIZATION
 # -------------------------
 
+# Mirrors crud_payment._REFUND_COMMITTED_STATUSES exactly (Initiated
+# counts as already "spoken for", not yet refundable again, since a
+# Razorpay refund is asynchronous). Duplicated here (rather than imported)
+# only because crud_payment already imports crud_booking, not the reverse.
+_REFUND_COMMITTED_STATUSES = ("Completed", "Initiated")
+
+
+def _refundable_amount(db: Session, booking_id: int) -> Decimal:
+    """Mirrors crud_payment._total_captured_and_refunded's refundable
+    ceiling (captured payments minus committed refunds) — see that
+    function's docstring for the full rationale. Used only for the
+    read-only `refundable_amount` field on BookingResponse; the standalone
+    refund endpoint itself still enforces the ceiling independently via
+    the canonical crud_payment function at write time."""
+    from models import Payment, Refund
+    captured = db.query(Payment).filter(Payment.booking_id == booking_id, Payment.status == "Captured").all()
+    total_captured = sum((Decimal(p.amount) for p in captured), Decimal("0"))
+    committed_refunds = (
+        db.query(Refund)
+        .filter(Refund.booking_id == booking_id, Refund.status.in_(_REFUND_COMMITTED_STATUSES))
+        .all()
+    )
+    total_refunded = sum((Decimal(r.final_amount) for r in committed_refunds), Decimal("0"))
+    return total_captured - total_refunded
+
+
 def serialize_booking(db: Session, booking: Booking) -> dict:
     branch = db.query(Branch).filter(Branch.id == booking.branch_id).first()
     business_customer = db.query(BusinessCustomer).filter(BusinessCustomer.id == booking.customer_id).first()
@@ -838,6 +1018,7 @@ def serialize_booking(db: Session, booking: Booking) -> dict:
         if branch_service else None
     )
     resource = db.query(Resource).filter(Resource.id == booking.resource_id).first()
+    financial = db.query(BookingFinancial).filter(BookingFinancial.booking_id == booking.id).first()
 
     return {
         "id": booking.id,
@@ -860,6 +1041,14 @@ def serialize_booking(db: Session, booking: Booking) -> dict:
         "created_by": booking.created_by,
         "created_at": booking.created_at,
         "updated_at": booking.updated_at,
+        "financial_status": financial.financial_status if financial else None,
+        "total_amount": financial.total_amount if financial else None,
+        "amount_paid": financial.amount_paid if financial else None,
+        "amount_refunded": financial.amount_refunded if financial else None,
+        "deposit_amount": financial.deposit_amount if financial else None,
+        "balance_due": financial.balance_due if financial else None,
+        "balance_due_at": financial.balance_due_at if financial else None,
+        "refundable_amount": _refundable_amount(db, booking.id) if financial else Decimal("0"),
     }
 
 

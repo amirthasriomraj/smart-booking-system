@@ -1,6 +1,7 @@
 from pydantic import BaseModel, ConfigDict
 from typing import Optional, List, Any
 from datetime import datetime, date as DateType, time as TimeType
+from decimal import Decimal
 
 
 # -------------------------
@@ -55,12 +56,39 @@ class BookingRescheduleRequest(BaseModel):
     booking_date: DateType
     start_time: TimeType
     resource_id: Optional[int] = None  # PRD §19.1: date, time and/or resource
+    reason: Optional[str] = None  # Milestone 8 ID-047: mandatory when a staff actor overrides the customer policy
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class StaffRescheduleRequest(BookingRescheduleRequest):
+    """Staff-only: lets an authorized staff member explicitly choose the
+    payment method used to collect/refund a genuine reschedule price
+    difference (rule 14), instead of defaulting to the booking's existing
+    payment method. `payment_method` mirrors the existing collection
+    vocabulary — "RazorpayOnline" (order + checkout widget), "EmailPaymentLink"
+    (a Razorpay payment link emailed to the customer; still stored as a
+    RazorpayOnline Payment, exactly like the existing staff checkout
+    email-link flow), "Cash", or "ExternalManual" (Direct UPI/Bank
+    Transfer) — only for a genuine INCREASE; a decrease is always refunded
+    against the booking's actual captured payment(s), unaffected by this
+    field. `override_reason` is required whenever `payment_method` differs
+    from the booking's existing default method (or when there is no prior
+    payment to default from, e.g. Reserve Without Payment) and is recorded
+    in the audit log. `cash_received` is required when `payment_method` is
+    "Cash". This is deliberately NOT part of `BookingRescheduleRequest` —
+    customer self-reschedule must never be able to choose a payment
+    method."""
+    payment_method: Optional[str] = None
+    override_reason: Optional[str] = None
+    cash_received: Optional[Decimal] = None
 
     model_config = ConfigDict(extra="forbid")
 
 
 class BookingCancelRequest(BaseModel):
-    reason: Optional[str] = None  # PRD §20: optional cancellation reason
+    reason: Optional[str] = None  # PRD §20: optional for customers; Milestone 8 ID-047 makes it mandatory for staff
+    refund_override_amount: Optional[Decimal] = None  # Milestone 8 rule 16: Owner/Branch Manager only
 
     model_config = ConfigDict(extra="forbid")
 
@@ -96,6 +124,24 @@ class BookingResponse(BaseModel):
     created_by: int
     created_at: datetime
     updated_at: datetime
+
+    # Milestone 8 financial state (None for a pre-M8/legacy booking that
+    # never went through checkout and has no BookingFinancial row at all —
+    # distinct from a real financial_status value like
+    # "ReserveWithoutPayment"). See BookingFinancial's docstring for the
+    # financial_status transition table.
+    financial_status: Optional[str] = None
+    total_amount: Optional[Decimal] = None
+    amount_paid: Optional[Decimal] = None
+    amount_refunded: Optional[Decimal] = None
+    deposit_amount: Optional[Decimal] = None
+    balance_due: Optional[Decimal] = None
+    balance_due_at: Optional[datetime] = None
+    # How much of what was actually captured could still be refunded right
+    # now (captured payments minus committed refunds) — 0 for a booking
+    # with no BookingFinancial row (e.g. pre-M8/legacy). Lets the UI
+    # hide/disable a standalone Refund action once nothing remains.
+    refundable_amount: Decimal = Decimal("0")
 
     model_config = ConfigDict(from_attributes=True)
 
