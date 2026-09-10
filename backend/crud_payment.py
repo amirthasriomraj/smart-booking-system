@@ -16,6 +16,8 @@ from typing import Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
+import razorpay.errors as razorpay_errors
+import requests.exceptions
 
 from models import (
     Business, Branch, BranchService, BookingHold, Payment, Refund,
@@ -40,6 +42,32 @@ BALANCE_REMINDER_HOURS_BEFORE = 72
 BALANCE_DEADLINE_HOURS_BEFORE = 48
 
 TWO_PLACES = Decimal("0.01")
+
+# Provider-side failures (bad/invalid credentials, network error, Razorpay
+# outage) — never the application's own bug. Every SDK call that can raise
+# these is routed through `_call_razorpay` below so the client always gets
+# this application's normal structured JSON error instead of an unhandled
+# exception (which, raised inside a @app.middleware("http") handler, would
+# otherwise bypass this app's exception handlers entirely and leak a raw
+# stack trace to the caller).
+_RAZORPAY_PROVIDER_ERRORS = (
+    razorpay_errors.BadRequestError,
+    razorpay_errors.GatewayError,
+    razorpay_errors.ServerError,
+    requests.exceptions.RequestException,
+)
+
+
+def _call_razorpay(fn, *args, **kwargs):
+    """Wraps a Razorpay order/payment-link creation call (never refund
+    creation — that already has its own async-lifecycle handling via
+    `_refund_status_from_response`) so a provider-side failure becomes a
+    clean 502 with a generic, actionable message — no stack trace,
+    credentials, or provider error detail exposed to the client."""
+    try:
+        return fn(*args, **kwargs)
+    except _RAZORPAY_PROVIDER_ERRORS:
+        raise HTTPException(status_code=502, detail="Payment gateway is currently unavailable. Please try again shortly.")
 
 
 # -------------------------
@@ -161,16 +189,23 @@ def _require_deposit_eligible(booking_date, start_time) -> None:
 def compute_checkout_breakdown(
     db: Session, business: Business, branch: Branch, branch_service: BranchService, business_customer_id: int,
     booking_date, coupon_code: Optional[str], base_price_override: Optional[Decimal] = None,
-    final_price_override: Optional[Decimal] = None,
+    final_price_override: Optional[Decimal] = None, exclude_hold_id: Optional[int] = None,
 ):
     """Shared by customer and staff checkout: coupon validation (against
-    the effective base price) + the frozen calculation order (rule 9/10)."""
+    the effective base price) + the frozen calculation order (rule 9/10).
+
+    `exclude_hold_id` lets a refresh flow exclude the hold it is about to
+    replace from the coupon's own active-reservation count (see
+    `crud_coupon.validate_and_reserve_coupon`) — without it, a hold that
+    already embeds this coupon would count as a reservation against
+    itself when re-validating the same coupon on its own refresh."""
     base_price = Decimal(branch_service.price)
     coupon = None
     if coupon_code:
         coupon = crud_coupon.validate_and_reserve_coupon(
             db, coupon_code, business.id, branch.id, branch_service.id, business_customer_id,
             base_price_override if base_price_override is not None else base_price, booking_date,
+            exclude_hold_id=exclude_hold_id,
         )
     breakdown = pricing.compute_price(base_price, base_price_override, coupon, final_price_override)
     return breakdown, coupon
@@ -238,11 +273,25 @@ def _finalize_hold_to_booking(db: Session, hold: BookingHold, payment: Optional[
     before creating the Booking. `payment` is None only for the
     zero-payable-after-100%-coupon path, which never creates a Payment row.
 
+    Idempotent under a finalization race: the Razorpay webhook and a
+    client-triggered finalization (customer `/verify`, staff manual
+    confirm) can both reach this function for the same hold/payment — e.g.
+    the webhook wins first, and moments later the customer's own browser
+    callback calls `/verify` for a payment that already has a booking. If
+    `payment.booking_id` is already set, that payment already won such a
+    race and its booking is returned as-is rather than treating a hold that
+    is consequently no longer Active as "lost" — this is NOT the same case
+    as a genuinely abandoned/expired hold whose payment was never used.
+
     If the hold is no longer Active (expired and/or reclaimed since it was
-    created), no Booking is created; if a payment was captured, it is
-    handled by `_handle_lost_hold_payment` (ID-056) instead, and this
-    raises so the caller returns a clear error to the client.
+    created) AND this payment was never actually used for a booking, no
+    Booking is created; if a payment was captured, it is handled by
+    `_handle_lost_hold_payment` (ID-056) instead, and this raises so the
+    caller returns a clear error to the client.
     """
+    if payment is not None and payment.booking_id is not None:
+        return crud_booking.get_booking_or_404(db, payment.booking_id)
+
     business = crud_booking._get_business_or_404(db, hold.business_id)
     branch = get_branch_by_id(db, hold.branch_id)
     branch_service = get_branch_service_or_404(db, hold.branch_service_id)
@@ -431,10 +480,260 @@ def create_customer_checkout(db: Session, payload, current_user: User) -> dict:
         price_snapshot=price_snapshot, created_by=current_user.id,
     )
 
-    order = razorpay_service.create_order(amount_due_now, "INR", receipt=f"hold-{hold.id}")
+    order = _call_razorpay(razorpay_service.create_order, amount_due_now, "INR", receipt=f"hold-{hold.id}")
     payment = Payment(
         business_id=business.id, branch_id=branch.id, booking_hold_id=hold.id,
         payment_type="Deposit" if payload.payment_option == "Deposit" else "FullPayment",
+        method="RazorpayOnline", status="Created", amount=amount_due_now, currency="INR",
+        razorpay_order_id=order["id"], created_by=current_user.id,
+    )
+    db.add(payment)
+    db.commit()
+    db.refresh(payment)
+
+    settings = get_settings()
+    return {
+        "status": "AwaitingPayment", "hold_id": hold.id, "expires_at": hold.expires_at,
+        "razorpay_order_id": order["id"], "razorpay_key_id": settings.RAZORPAY_KEY_ID,
+        "amount_due": amount_due_now, "currency": "INR",
+    }
+
+
+def _customer_checkout_pricing(db: Session, payload, current_user: User, exclude_hold_id: Optional[int] = None):
+    """Shared read-only pricing computation for the customer checkout
+    hold/review flow (Phase 1 creation and every later coupon-triggered
+    refresh) — mirrors `_staff_checkout_common`'s role, adapted for a
+    self-service customer actor (no explicit customer_id/branch_id;
+    resolved from the branch_service and the authenticated user, exactly
+    like the existing one-shot `create_customer_checkout` above). Performs
+    no mutation — safe to call repeatedly with no side effects.
+
+    `exclude_hold_id` is only ever passed by `refresh_customer_checkout_hold`,
+    naming the hold about to be replaced, so re-validating the SAME coupon
+    it already carries doesn't count that hold as a reservation against
+    itself (see `compute_checkout_breakdown`/`validate_and_reserve_coupon`).
+    Hold creation never passes this — there is no "current hold" yet."""
+    branch_service = get_branch_service_or_404(db, payload.branch_service_id)
+    branch = get_branch_by_id(db, branch_service.branch_id)
+    business = crud_booking._get_business_or_404(db, branch.business_id)
+    crud_booking._check_bookable_state(business, branch, branch_service)
+
+    business_customer = crud_booking._get_or_create_business_customer_for_self_booking(db, business, current_user)
+    if business_customer.status != "Active":
+        raise HTTPException(status_code=409, detail="Your account is not Active with this business")
+
+    if payload.payment_option not in ("Full", "Deposit"):
+        raise HTTPException(status_code=400, detail="payment_option must be Full or Deposit")
+
+    breakdown, _coupon = compute_checkout_breakdown(
+        db, business, branch, branch_service, business_customer.id, payload.booking_date, payload.coupon_code,
+        exclude_hold_id=exclude_hold_id,
+    )
+
+    deposit_amount = balance_due = None
+    if payload.payment_option == "Deposit":
+        _require_deposit_eligible(payload.booking_date, payload.start_time)
+        deposit_amount, balance_due = pricing.compute_deposit(breakdown.final_amount, STANDARD_DEPOSIT_PERCENTAGE)
+        amount_due_now = deposit_amount
+    else:
+        amount_due_now = breakdown.final_amount
+
+    return business, branch, branch_service, business_customer, breakdown, amount_due_now, deposit_amount, balance_due
+
+
+def _customer_checkout_summary_dict(
+    *, kind, hold, branch_service_id, resource_id, booking_date, start_time,
+    breakdown, payment_option, amount_due_now, deposit_amount, balance_due,
+    coupon_code, razorpay_order_id=None, razorpay_key_id=None,
+) -> dict:
+    """The one response shape for both a real Hold and a NoPaymentRequired
+    (₹0) result — no separate ad-hoc shapes to keep in sync."""
+    balance_due_at = None
+    if deposit_amount is not None:
+        balance_due_at = appointment_datetime(booking_date, start_time) - timedelta(hours=BALANCE_DEADLINE_HOURS_BEFORE)
+    return {
+        "kind": kind,
+        "hold_id": hold.id if hold else None,
+        "expires_at": hold.expires_at if hold else None,
+        "branch_service_id": branch_service_id,
+        "resource_id": resource_id,
+        "booking_date": booking_date,
+        "start_time": start_time,
+        "calculated_price": str(breakdown.calculated_price),
+        "discount_amount": str(breakdown.discount_amount),
+        "coupon_code": coupon_code if breakdown.coupon_id is not None else None,
+        "final_amount": str(breakdown.final_amount),
+        "payment_option": payment_option,
+        "amount_due_now": str(amount_due_now),
+        "deposit_amount": str(deposit_amount) if deposit_amount is not None else None,
+        "deposit_percentage": str(STANDARD_DEPOSIT_PERCENTAGE) if deposit_amount is not None else None,
+        "balance_due": str(balance_due) if balance_due is not None else None,
+        "balance_due_at": balance_due_at,
+        "currency": "INR",
+        "razorpay_order_id": razorpay_order_id,
+        "razorpay_key_id": razorpay_key_id,
+    }
+
+
+def create_customer_checkout_hold(db: Session, payload, current_user: User) -> dict:
+    """
+    Phase 1 of the customer checkout review flow (manual-acceptance fix):
+    selecting a slot must show the authoritative price/coupon/deposit
+    breakdown before any payment happens, without creating a Booking and
+    WITHOUT contacting Razorpay — the customer has not clicked Book/Proceed
+    to Pay yet. Reuses the exact same pricing primitives as the existing
+    one-shot `create_customer_checkout` above (`compute_checkout_breakdown`,
+    `crud_hold.acquire_hold`, the existing 6-minute CustomerCheckout hold
+    type), so a hold created here finalizes through
+    `create_customer_checkout_payment` (Phase 2: creates the Razorpay order
+    only once the customer actually clicks Proceed to Pay) and then the
+    UNCHANGED existing `verify_customer_checkout_payment` /
+    `/customer/checkout/{hold_id}/verify`.
+
+    A 0-amount result (100%-off coupon, rule 10/13) never acquires a hold
+    at all (ID-046's "no hold when no money is at stake" principle) — the
+    frontend confirms that case by calling the existing one-shot
+    `/customer/checkout` endpoint, which already implements the frozen
+    "skip Razorpay entirely" booking path unchanged.
+    """
+    business, branch, branch_service, business_customer, breakdown, amount_due_now, deposit_amount, balance_due = \
+        _customer_checkout_pricing(db, payload, current_user)
+
+    if amount_due_now == 0:
+        return _customer_checkout_summary_dict(
+            kind="NoPaymentRequired", hold=None,
+            branch_service_id=branch_service.id, resource_id=payload.resource_id,
+            booking_date=payload.booking_date, start_time=payload.start_time,
+            breakdown=breakdown, payment_option=payload.payment_option,
+            amount_due_now=amount_due_now, deposit_amount=deposit_amount, balance_due=balance_due,
+            coupon_code=payload.coupon_code,
+        )
+
+    price_snapshot = _price_snapshot(
+        breakdown, payload.payment_option, deposit_amount, balance_due,
+        effective_platform_fee_rate(db, business.id), payload.resource_id,
+    )
+    hold = crud_hold.acquire_hold(
+        db, business=business, branch=branch, branch_service=branch_service,
+        booking_date=payload.booking_date, start_time=payload.start_time, resource_id=payload.resource_id,
+        customer_id=business_customer.id, hold_type="CustomerCheckout", hold_minutes=CUSTOMER_HOLD_MINUTES,
+        price_snapshot=price_snapshot, created_by=current_user.id,
+    )
+    return _customer_checkout_summary_dict(
+        kind="Hold", hold=hold,
+        branch_service_id=branch_service.id, resource_id=hold.resource_id,
+        booking_date=hold.booking_date, start_time=hold.start_time,
+        breakdown=breakdown, payment_option=payload.payment_option,
+        amount_due_now=amount_due_now, deposit_amount=deposit_amount, balance_due=balance_due,
+        coupon_code=payload.coupon_code,
+    )
+
+
+def _get_customer_hold_for_refresh(db: Session, hold_id: int, current_user: User) -> BookingHold:
+    hold = crud_hold.get_hold_or_404(db, hold_id)
+    if hold.hold_type != "CustomerCheckout":
+        raise HTTPException(status_code=404, detail="Hold not found")
+    # Deliberate duck-typed reuse: _require_owning_customer only reads
+    # `.customer_id` off its argument, which BookingHold carries exactly
+    # like Booking does.
+    crud_booking._require_owning_customer(db, hold, current_user)
+    if hold.status != "Active":
+        raise HTTPException(status_code=409, detail="This hold is no longer active — please start checkout again")
+    if db.query(Payment).filter(Payment.booking_hold_id == hold.id).first() is not None:
+        raise HTTPException(status_code=409, detail="This hold has already been used for a payment attempt")
+    return hold
+
+
+def refresh_customer_checkout_hold(db: Session, hold_id: int, payload, current_user: User) -> dict:
+    """
+    Recomputes the customer checkout summary for the SAME slot after the
+    coupon (or payment option) changes — mirrors `staff_refresh_checkout_hold`
+    exactly: releases the existing hold and acquires a fresh one for the
+    identical slot under the new terms; the old hold's price_snapshot is
+    never mutated in place (ID-054). Terms are validated/computed FIRST —
+    a rejected coupon or ineligible deposit request raises before the
+    still-good existing hold is touched.
+
+    Like hold creation, this never contacts Razorpay and never creates a
+    Payment row — only `create_customer_checkout_payment` (Phase 2, called
+    from the final Book/Proceed to Pay action) does that.
+
+    `old_hold.id` is passed to pricing as `exclude_hold_id` so that
+    re-applying the SAME coupon the old hold already carries doesn't count
+    that still-Active hold as a reservation against itself (it is about to
+    be released regardless, once these terms are confirmed valid) — every
+    other customer's/hold's reservation of this coupon still counts
+    unchanged.
+    """
+    old_hold = _get_customer_hold_for_refresh(db, hold_id, current_user)
+
+    from types import SimpleNamespace
+    pricing_payload = SimpleNamespace(
+        branch_service_id=old_hold.branch_service_id, booking_date=old_hold.booking_date,
+        start_time=old_hold.start_time, resource_id=old_hold.resource_id,
+        coupon_code=payload.coupon_code, payment_option=payload.payment_option,
+    )
+    business, branch, branch_service, business_customer, breakdown, amount_due_now, deposit_amount, balance_due = \
+        _customer_checkout_pricing(db, pricing_payload, current_user, exclude_hold_id=old_hold.id)
+
+    # Only release the stale hold once the NEW terms are confirmed valid —
+    # acquire_hold's own overlap check would otherwise see this hold's own
+    # occupancy of the slot as a conflict when reacquiring it below.
+    crud_hold.release_hold(db, old_hold, "Cancelled", performed_by=current_user.id)
+
+    if amount_due_now == 0:
+        return _customer_checkout_summary_dict(
+            kind="NoPaymentRequired", hold=None,
+            branch_service_id=branch_service.id, resource_id=old_hold.resource_id,
+            booking_date=old_hold.booking_date, start_time=old_hold.start_time,
+            breakdown=breakdown, payment_option=payload.payment_option,
+            amount_due_now=amount_due_now, deposit_amount=deposit_amount, balance_due=balance_due,
+            coupon_code=payload.coupon_code,
+        )
+
+    price_snapshot = _price_snapshot(
+        breakdown, payload.payment_option, deposit_amount, balance_due,
+        effective_platform_fee_rate(db, business.id), old_hold.resource_id,
+    )
+    new_hold = crud_hold.acquire_hold(
+        db, business=business, branch=branch, branch_service=branch_service,
+        booking_date=old_hold.booking_date, start_time=old_hold.start_time, resource_id=old_hold.resource_id,
+        customer_id=business_customer.id, hold_type="CustomerCheckout", hold_minutes=CUSTOMER_HOLD_MINUTES,
+        price_snapshot=price_snapshot, created_by=current_user.id,
+    )
+    return _customer_checkout_summary_dict(
+        kind="Hold", hold=new_hold,
+        branch_service_id=branch_service.id, resource_id=new_hold.resource_id,
+        booking_date=new_hold.booking_date, start_time=new_hold.start_time,
+        breakdown=breakdown, payment_option=payload.payment_option,
+        amount_due_now=amount_due_now, deposit_amount=deposit_amount, balance_due=balance_due,
+        coupon_code=payload.coupon_code,
+    )
+
+
+def create_customer_checkout_payment(db: Session, hold_id: int, current_user: User) -> dict:
+    """
+    Phase 2 of the customer checkout review flow (manual-acceptance fix):
+    called ONLY when the customer clicks the final Book/Proceed to Pay
+    action for an already-reviewed CustomerCheckout hold. This is the
+    first point in the review flow that contacts Razorpay — hold creation
+    and every coupon/payment-option refresh above are pricing-only and
+    never reach the payment gateway. Reuses `_get_customer_hold_for_refresh`
+    for the same Active/ownership/not-already-paid guard the refresh path
+    uses, and the same `_amount_due_now_from_snapshot` helper the staff
+    finalize flows use to read the amount from the hold's own locked-in
+    price_snapshot rather than recomputing it. Finalization still happens
+    through the UNCHANGED existing `verify_customer_checkout_payment` /
+    `/customer/checkout/{hold_id}/verify`, using this same hold_id.
+    """
+    hold = _get_customer_hold_for_refresh(db, hold_id, current_user)
+    amount_due_now = _amount_due_now_from_snapshot(hold)
+    snapshot = hold.price_snapshot or {}
+
+    order = _call_razorpay(razorpay_service.create_order, amount_due_now, "INR", receipt=f"hold-{hold.id}")
+    payment = Payment(
+        business_id=hold.business_id, branch_id=hold.branch_id, booking_hold_id=hold.id,
+        payment_type="Deposit" if snapshot.get("payment_option") == "Deposit" else "FullPayment",
         method="RazorpayOnline", status="Created", amount=amount_due_now, currency="INR",
         razorpay_order_id=order["id"], created_by=current_user.id,
     )
@@ -566,26 +865,180 @@ def _staff_checkout_common(db: Session, branch_id: int, payload, current_user: U
     return business, branch, branch_service, business_customer, amount_due_now, price_snapshot
 
 
-def staff_cash_checkout(db: Session, branch_id: int, payload, current_user: User) -> Booking:
-    """Business rule 12.A — interactive/walk-in cash or offline payment."""
+def _checkout_hold_summary(hold: BookingHold, amount_due_now: Decimal, coupon_code: Optional[str]) -> dict:
+    """Read-only projection of an already-acquired hold's locked-in terms
+    (ID-054) plus the amount payable right now — used both for the Phase 1
+    review summary and echoed unchanged at Phase 2 finalize time."""
+    snapshot = hold.price_snapshot or {}
+    balance_due_at = None
+    if snapshot.get("deposit_amount") is not None:
+        balance_due_at = appointment_datetime(hold.booking_date, hold.start_time) - timedelta(hours=BALANCE_DEADLINE_HOURS_BEFORE)
+    return {
+        "hold_id": hold.id, "expires_at": hold.expires_at,
+        "customer_id": hold.customer_id, "branch_service_id": hold.branch_service_id, "resource_id": hold.resource_id,
+        "booking_date": hold.booking_date, "start_time": hold.start_time, "end_time": hold.end_time,
+        "calculated_price": snapshot.get("calculated_price"),
+        "base_price_override": snapshot.get("base_price_override"),
+        "discount_amount": snapshot.get("discount_amount"),
+        "coupon_code": coupon_code if snapshot.get("coupon_id") is not None else None,
+        "final_price_override": snapshot.get("final_price_override"),
+        "final_amount": snapshot.get("final_amount"),
+        "payment_option": snapshot.get("payment_option"),
+        "amount_due_now": str(amount_due_now),
+        "deposit_amount": snapshot.get("deposit_amount"),
+        "balance_due": snapshot.get("balance_due"),
+        "balance_due_at": balance_due_at,
+        "currency": snapshot.get("currency", "INR"),
+    }
+
+
+def staff_create_checkout_hold(db: Session, branch_id: int, payload, current_user: User) -> dict:
+    """
+    Phase 1 of the staff checkout review flow (manual-acceptance fix):
+    selecting a slot must never itself create a Booking. This computes the
+    full server-authoritative pricing/coupon/deposit breakdown exactly like
+    the old one-shot checkout functions did, and acquires the same
+    10-minute StaffCheckout hold — but creates no Payment and no Booking.
+    The caller reviews the returned summary (customer, service, resource,
+    price breakdown, amount due now, deposit/balance), then finalizes via
+    whichever `staff_finalize_*_hold` matches the payment method actually
+    chosen, using this same hold_id. Reuses `_staff_checkout_common`/
+    `crud_hold.acquire_hold` unchanged — no parallel pricing/hold logic.
+    """
     business, branch, branch_service, business_customer, amount_due_now, price_snapshot = _staff_checkout_common(
         db, branch_id, payload, current_user
     )
+    hold = crud_hold.acquire_hold(
+        db, business=business, branch=branch, branch_service=branch_service,
+        booking_date=payload.booking_date, start_time=payload.start_time, resource_id=payload.resource_id,
+        customer_id=business_customer.id, hold_type="StaffCheckout", hold_minutes=STAFF_HOLD_MINUTES,
+        price_snapshot=price_snapshot, created_by=current_user.id,
+    )
+    return _checkout_hold_summary(hold, amount_due_now, payload.coupon_code)
+
+
+def staff_refresh_checkout_hold(db: Session, hold_id: int, payload, current_user: User) -> dict:
+    """
+    Manual-acceptance fix: lets staff recalculate the Booking & Payment
+    Summary after changing a pricing-affecting input (coupon, base/final
+    price override, payment option) for an already-acquired hold, without
+    ever mutating the hold's own price_snapshot (ID-054's immutability is
+    per-hold, not per-slot — a NEW hold is what carries the new terms).
+
+    The slot itself (customer/service/date/time/resource) is always taken
+    from the hold being refreshed, never from the request, so this can
+    only ever recompute pricing for the SAME slot the staff member already
+    selected. Terms are validated/computed FIRST via the same
+    `_staff_checkout_common` used by hold creation — a rejected coupon or
+    a missing override reason raises before anything is touched, so the
+    still-good existing hold is never destroyed for an invalid input.
+    Only once that succeeds is the stale hold released and a new one
+    acquired for the identical slot via the ordinary `crud_hold.
+    acquire_hold` path — the same advisory-lock/availability
+    re-validation as every other hold acquisition. If the slot can no
+    longer be acquired (e.g. raced away in the interim), this raises and
+    the old hold has already been released — the caller must have the
+    user reselect a slot, exactly like a lost hold anywhere else in this
+    module.
+    """
+    old_hold = _get_staff_hold_for_finalize(db, hold_id, current_user)
+
+    from types import SimpleNamespace
+    refresh_payload = SimpleNamespace(
+        customer_id=old_hold.customer_id, branch_service_id=old_hold.branch_service_id,
+        booking_date=old_hold.booking_date, start_time=old_hold.start_time, resource_id=old_hold.resource_id,
+        coupon_code=payload.coupon_code, payment_option=payload.payment_option,
+        deposit_percentage_override=payload.deposit_percentage_override,
+        base_price_override=payload.base_price_override, final_price_override=payload.final_price_override,
+        price_override_reason=payload.price_override_reason,
+    )
+
+    business, branch, branch_service, business_customer, amount_due_now, price_snapshot = _staff_checkout_common(
+        db, old_hold.branch_id, refresh_payload, current_user
+    )
+
+    # Only now release the stale hold — acquire_hold's own overlap check
+    # would otherwise see this hold's own occupancy of the slot as a
+    # conflict when reacquiring it below.
+    crud_hold.release_hold(db, old_hold, "Cancelled", performed_by=current_user.id)
+
+    new_hold = crud_hold.acquire_hold(
+        db, business=business, branch=branch, branch_service=branch_service,
+        booking_date=old_hold.booking_date, start_time=old_hold.start_time, resource_id=old_hold.resource_id,
+        customer_id=business_customer.id, hold_type="StaffCheckout", hold_minutes=STAFF_HOLD_MINUTES,
+        price_snapshot=price_snapshot, created_by=current_user.id,
+    )
+    return _checkout_hold_summary(new_hold, amount_due_now, payload.coupon_code)
+
+
+def _get_staff_hold_for_finalize(db: Session, hold_id: int, current_user: User) -> BookingHold:
+    """Shared lookup/authorization for every Phase 2 staff finalize
+    endpoint (and the pricing-refresh endpoint): the hold must be a
+    still-Active StaffCheckout hold in a branch this staff member manages,
+    and must not already have a payment attempt recorded against it
+    (guards a double-submitted finalize click from creating two Payment
+    rows for the same hold, and equally guards against refreshing pricing
+    on a hold that's already mid-finalization)."""
+    hold = crud_hold.get_hold_or_404(db, hold_id)
+    if hold.hold_type != "StaffCheckout":
+        raise HTTPException(status_code=404, detail="Hold not found")
+    branch = get_branch_by_id(db, hold.branch_id)
+    crud_booking._require_branch_booking_staff_access(db, branch, current_user)
+    if hold.status != "Active":
+        raise HTTPException(status_code=409, detail="This hold is no longer active — please start checkout again")
+    if db.query(Payment).filter(Payment.booking_hold_id == hold.id).first() is not None:
+        raise HTTPException(status_code=409, detail="This hold has already been used for a payment attempt")
+    return hold
+
+
+def staff_discard_checkout_hold(db: Session, hold_id: int, current_user: User) -> dict:
+    """
+    Manual-acceptance fix: explicit release of an abandoned StaffCheckout
+    hold — called by the frontend when the customer/branch/service/date
+    changes after a Booking & Payment Summary already exists, which
+    invalidates the slot the hold was acquired for (that identity can
+    never be edited in place; a genuinely new hold is required).
+
+    Deliberately tolerant rather than strict: a hold that's already gone
+    (expired/finalized) or already has a payment attempt against it is
+    left untouched and this still reports success, so the frontend can
+    call it defensively on every identity-field change without first
+    checking hold state itself.
+    """
+    hold = crud_hold.get_hold_or_404(db, hold_id)
+    if hold.hold_type != "StaffCheckout":
+        raise HTTPException(status_code=404, detail="Hold not found")
+    branch = get_branch_by_id(db, hold.branch_id)
+    crud_booking._require_branch_booking_staff_access(db, branch, current_user)
+
+    if hold.status == "Active" and db.query(Payment).filter(Payment.booking_hold_id == hold.id).first() is None:
+        crud_hold.release_hold(db, hold, "Cancelled", performed_by=current_user.id)
+
+    return {"status": "Discarded"}
+
+
+def _amount_due_now_from_snapshot(hold: BookingHold) -> Decimal:
+    snapshot = hold.price_snapshot or {}
+    if snapshot.get("deposit_amount") is not None:
+        return Decimal(snapshot["deposit_amount"])
+    return Decimal(snapshot["final_amount"])
+
+
+def staff_finalize_cash_hold(db: Session, hold_id: int, payload, current_user: User) -> dict:
+    """Business rule 12.A — interactive/walk-in cash payment. Phase 2:
+    finalizes an already-reviewed StaffCheckout hold; the amount due is
+    read from the hold's own locked-in price_snapshot, never recomputed."""
+    hold = _get_staff_hold_for_finalize(db, hold_id, current_user)
+    snapshot = hold.price_snapshot or {}
+    amount_due_now = _amount_due_now_from_snapshot(hold)
 
     if Decimal(payload.cash_received) < amount_due_now:
         raise HTTPException(status_code=400, detail="Cash received is less than the amount due")
     change_returned = (Decimal(payload.cash_received) - amount_due_now).quantize(TWO_PLACES)
 
-    hold = crud_hold.acquire_hold(
-        db, business=business, branch=branch, branch_service=branch_service,
-        booking_date=payload.booking_date, start_time=payload.start_time, resource_id=payload.resource_id,
-        customer_id=business_customer.id, hold_type="StaffWalkIn", hold_minutes=STAFF_HOLD_MINUTES,
-        price_snapshot=price_snapshot, created_by=current_user.id,
-    )
-
     payment = Payment(
-        business_id=business.id, branch_id=branch.id, booking_hold_id=hold.id,
-        payment_type="Deposit" if payload.payment_option == "Deposit" else "FullPayment",
+        business_id=hold.business_id, branch_id=hold.branch_id, booking_hold_id=hold.id,
+        payment_type="Deposit" if snapshot.get("payment_option") == "Deposit" else "FullPayment",
         method="Cash", status="Captured", amount=amount_due_now, currency="INR",
         cash_received=Decimal(payload.cash_received), change_returned=change_returned,
         verified_by=current_user.id, created_by=current_user.id, verified_at=datetime.utcnow(),
@@ -593,31 +1046,32 @@ def staff_cash_checkout(db: Session, branch_id: int, payload, current_user: User
     db.add(payment)
     db.flush()
 
-    return _finalize_hold_to_booking(db, hold, payment)
+    booking = _finalize_hold_to_booking(db, hold, payment)
+    return {
+        "status": "Confirmed", "booking": crud_booking.serialize_booking(db, booking),
+        "cash_received": str(payment.cash_received), "amount_charged": str(payment.amount),
+        "change_returned": str(payment.change_returned),
+    }
 
 
-def staff_email_link_checkout(db: Session, branch_id: int, payload, current_user: User) -> dict:
+def staff_finalize_email_link_hold(db: Session, hold_id: int, current_user: User) -> dict:
     """Business rule 12.B — staff sends an online payment link by email
-    (typical use: booking taken over phone). Finalization happens later,
-    when the customer pays and the Razorpay webhook confirms it (or staff
-    later calls the same confirm-external path if the link is paid but the
-    webhook is delayed)."""
-    business, branch, branch_service, business_customer, amount_due_now, price_snapshot = _staff_checkout_common(
-        db, branch_id, payload, current_user
-    )
+    (typical use: booking taken over phone). Phase 2: finalization of the
+    Payment/Booking happens later, when the customer pays and the Razorpay
+    webhook confirms it (or staff later calls the confirm-external path if
+    the link is paid but the webhook is delayed)."""
+    hold = _get_staff_hold_for_finalize(db, hold_id, current_user)
+    amount_due_now = _amount_due_now_from_snapshot(hold)
+    snapshot = hold.price_snapshot or {}
 
-    hold = crud_hold.acquire_hold(
-        db, business=business, branch=branch, branch_service=branch_service,
-        booking_date=payload.booking_date, start_time=payload.start_time, resource_id=payload.resource_id,
-        customer_id=business_customer.id, hold_type="StaffEmailLink", hold_minutes=STAFF_HOLD_MINUTES,
-        price_snapshot=price_snapshot, created_by=current_user.id,
-    )
-
+    business_customer = crud_booking._get_business_customer_or_404(db, hold.customer_id)
     customer_email = _business_customer_email(db, business_customer)
     if not customer_email:
         raise HTTPException(status_code=400, detail="Customer has no email on file — use the direct external payment flow instead")
 
-    link = razorpay_service.create_payment_link(
+    branch_service = get_branch_service_or_404(db, hold.branch_service_id)
+    link = _call_razorpay(
+        razorpay_service.create_payment_link,
         amount_due_now, "INR", description=f"Booking payment ({branch_service.duration} min)",
         customer_name=customer_email, customer_email=customer_email,
     )
@@ -627,8 +1081,8 @@ def staff_email_link_checkout(db: Session, branch_id: int, payload, current_user
     # the webhook correlates `payment_link.paid` events back to this
     # Payment via that same id (see routers/payments_webhook.py).
     payment = Payment(
-        business_id=business.id, branch_id=branch.id, booking_hold_id=hold.id,
-        payment_type="Deposit" if payload.payment_option == "Deposit" else "FullPayment",
+        business_id=hold.business_id, branch_id=hold.branch_id, booking_hold_id=hold.id,
+        payment_type="Deposit" if snapshot.get("payment_option") == "Deposit" else "FullPayment",
         method="RazorpayOnline", status="Created", amount=amount_due_now, currency="INR",
         razorpay_order_id=link["id"], created_by=current_user.id,
     )
@@ -642,24 +1096,17 @@ def staff_email_link_checkout(db: Session, branch_id: int, payload, current_user
     }
 
 
-def staff_external_checkout(db: Session, branch_id: int, payload, current_user: User) -> dict:
+def staff_finalize_external_hold(db: Session, hold_id: int, current_user: User) -> dict:
     """Business rule 12.C — phone booking, no email; customer pays directly
-    via the business's external UPI/bank details. Staff later confirms via
-    `staff_confirm_external_payment`."""
-    business, branch, branch_service, business_customer, amount_due_now, price_snapshot = _staff_checkout_common(
-        db, branch_id, payload, current_user
-    )
-
-    hold = crud_hold.acquire_hold(
-        db, business=business, branch=branch, branch_service=branch_service,
-        booking_date=payload.booking_date, start_time=payload.start_time, resource_id=payload.resource_id,
-        customer_id=business_customer.id, hold_type="StaffExternalManual", hold_minutes=STAFF_HOLD_MINUTES,
-        price_snapshot=price_snapshot, created_by=current_user.id,
-    )
+    via the business's external UPI/bank details. Phase 2: staff later
+    confirms via the existing `staff_confirm_external_payment`."""
+    hold = _get_staff_hold_for_finalize(db, hold_id, current_user)
+    amount_due_now = _amount_due_now_from_snapshot(hold)
+    snapshot = hold.price_snapshot or {}
 
     payment = Payment(
-        business_id=business.id, branch_id=branch.id, booking_hold_id=hold.id,
-        payment_type="Deposit" if payload.payment_option == "Deposit" else "FullPayment",
+        business_id=hold.business_id, branch_id=hold.branch_id, booking_hold_id=hold.id,
+        payment_type="Deposit" if snapshot.get("payment_option") == "Deposit" else "FullPayment",
         method="ExternalManual", status="Created", amount=amount_due_now, currency="INR",
         created_by=current_user.id,
     )
@@ -667,7 +1114,7 @@ def staff_external_checkout(db: Session, branch_id: int, payload, current_user: 
     db.commit()
     db.refresh(payment)
 
-    return {"status": "AwaitingPayment", "hold_id": hold.id, "expires_at": hold.expires_at}
+    return {"status": "AwaitingPayment", "hold_id": hold.id, "expires_at": hold.expires_at, "amount_due": amount_due_now, "currency": "INR"}
 
 
 def staff_confirm_external_payment(db: Session, hold_id: int, current_user: User) -> Booking:
@@ -743,7 +1190,7 @@ def initiate_balance_payment(db: Session, booking_id: int, current_user: User) -
     crud_booking._require_active_status(booking)
     financial = _get_awaiting_balance_financial_or_404(db, booking_id)
 
-    order = razorpay_service.create_order(Decimal(financial.balance_due), "INR", receipt=f"balance-{booking_id}")
+    order = _call_razorpay(razorpay_service.create_order, Decimal(financial.balance_due), "INR", receipt=f"balance-{booking_id}")
     payment = Payment(
         business_id=booking.business_id, branch_id=booking.branch_id, booking_id=booking.id,
         payment_type="BalancePayment", method="RazorpayOnline", status="Created",
@@ -977,6 +1424,16 @@ def reconcile_webhook_event(db: Session, event_type: str, payload: dict) -> None
         if financial is not None and financial.financial_status == "AwaitingBalance":
             financial.amount_paid = Decimal(financial.amount_paid) + Decimal(payment.amount)
             financial.financial_status = "FullyPaid"
+            _apply_platform_fee(db, payment, financial)
+            db.commit()
+    elif payment.booking_id is not None and payment.payment_type == "RescheduleCollection":
+        # An EmailPaymentLink (or order-based) reschedule-difference
+        # collection confirmed asynchronously via webhook rather than the
+        # customer's own /verify call or a staff manual confirm — same
+        # financial effect as either of those (Part 4/5).
+        financial = db.query(BookingFinancial).filter(BookingFinancial.booking_id == payment.booking_id).first()
+        if financial is not None:
+            financial.amount_paid = Decimal(financial.amount_paid) + Decimal(payment.amount)
             _apply_platform_fee(db, payment, financial)
             db.commit()
 
@@ -1218,6 +1675,69 @@ def staff_cancel_booking_with_refund(db: Session, booking_id: int, payload, curr
     return {"booking": crud_booking.serialize_booking(db, booking), "refund": refund_result}
 
 
+def staff_refund_booking(db: Session, booking_id: int, payload, current_user: User) -> dict:
+    """
+    Standalone refund action (partial or full), independent of
+    cancellation — e.g. a service-quality goodwill refund, or refunding an
+    already-cancelled booking further after the fact. Deliberately never
+    touches `Booking.status`/`cancellation_reason`: cancellation stays a
+    separate, explicit action (`staff_cancel_booking_with_refund`).
+
+    Authorization mirrors every other staff booking action: Business Owner
+    business-wide, Branch Manager restricted to their own currently
+    assigned branch (`_require_branch_booking_staff_access`).
+
+    Reuses `_distribute_and_process_refund` — the same Gateway/Manual
+    routing, asynchronous Razorpay refund-lifecycle handling, and
+    proportional platform-fee reversal used by cancellation and reschedule
+    refunds — rather than a parallel financial implementation. The
+    per-booking advisory lock (`_acquire_booking_lock`) serializes this
+    against any other refund in flight for the same booking (a concurrent
+    cancellation refund or another standalone refund), so the refundable
+    ceiling recomputed under the lock always reflects every
+    already-committed refund before this one is validated against it —
+    two concurrent requests can never jointly exceed what was actually
+    captured.
+    """
+    booking = crud_booking.get_booking_or_404(db, booking_id)
+    branch = get_branch_by_id(db, booking.branch_id)
+    crud_booking._require_branch_booking_staff_access(db, branch, current_user)
+
+    if not payload.reason or not payload.reason.strip():
+        raise HTTPException(status_code=400, detail="A reason is required for a refund")
+
+    amount = Decimal(payload.amount)
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Refund amount must be positive")
+
+    _acquire_booking_lock(db, booking.id)
+
+    total_captured, total_already_refunded = _total_captured_and_refunded(db, booking.id)
+    max_refundable = total_captured - total_already_refunded
+    if amount > max_refundable:
+        raise HTTPException(status_code=400, detail=f"Refund amount cannot exceed the refundable amount ({max_refundable})")
+
+    role_snapshot = _actor_role_label(db, booking.business_id, current_user.id)
+    refunds = _distribute_and_process_refund(db, booking, amount, current_user.id, role_snapshot, reason=payload.reason)
+
+    write_audit(
+        db, business_id=booking.business_id, entity_type="Booking", entity_id=booking.id,
+        action="BOOKING_STANDALONE_REFUND", performed_by=current_user.id,
+        new_value=f"amount={amount}", reason=payload.reason, commit=False,
+    )
+    db.commit()
+    db.refresh(booking)
+
+    final_amount = sum((Decimal(r.final_amount) for r in refunds), Decimal("0"))
+    return {
+        "booking": crud_booking.serialize_booking(db, booking),
+        "refund": {
+            "requested_amount": str(amount), "final_amount": str(final_amount),
+            "refund_ids": [r.id for r in refunds],
+        },
+    }
+
+
 def _apply_cancellation_refund(
     db: Session, booking: Booking, hours_before: float, actor_id: int, role_snapshot: str,
     refund_override_amount, reason,
@@ -1291,22 +1811,143 @@ def _apply_cancellation_refund(
 # PHASE 8 — RESCHEDULE PRICE DIFFERENCE (rule 14)
 # -------------------------
 
-def apply_reschedule_price_difference(db: Session, booking: Booking, actor_id: int, role_snapshot: str) -> Optional[dict]:
+# Storage vocabulary (Payment.method) a genuine reschedule difference can
+# ultimately be recorded under.
+_RESCHEDULE_STORED_METHODS = ("RazorpayOnline", "Cash", "ExternalManual")
+# Input vocabulary staff may explicitly choose for a genuine INCREASE.
+# "EmailPaymentLink" is a distinct staff choice (Part 2/Example C) but is
+# still stored as a "RazorpayOnline" Payment — exactly the same convention
+# `staff_finalize_email_link_hold` already uses for a new booking.
+_RESCHEDULE_INPUT_METHODS = ("RazorpayOnline", "EmailPaymentLink", "Cash", "ExternalManual")
+
+
+def _default_reschedule_payment_method(db: Session, booking_id: int) -> Optional[str]:
+    """The booking's existing payment method is the DEFAULT for a genuine
+    reschedule difference (Part 2's 'original payment method = DEFAULT').
+    Taken from the most recent Captured payment on this booking; `None` if
+    the booking has no Captured payment at all (Reserve Without Payment, or
+    a 100%-off coupon booking) — an actor must then explicitly choose one
+    for a genuine increase."""
+    payment = (
+        db.query(Payment)
+        .filter(Payment.booking_id == booking_id, Payment.status == "Captured")
+        .order_by(Payment.id.desc())
+        .first()
+    )
+    return payment.method if payment else None
+
+
+def _reschedule_effective_price_breakdown(db: Session, booking: Booking, financial: BookingFinancial, branch_service: BranchService):
     """
-    rule 14: rescheduling normally retains the same service, but if the
-    service's current effective price differs from what this booking's
-    amount was locked in at, the difference is collected (price increased)
-    or refunded (price decreased). Called after `crud_booking.
-    reschedule_booking` has already committed the schedule change — a
-    separate, best-effort financial follow-on step, consistent with the
-    rest of this module's multi-commit checkout flows.
+    rule 14 fix: a reschedule's price difference must compare LIKE-FOR-LIKE
+    effective prices, not the service's raw catalog price against the
+    booking's already-discounted `total_amount` — the previous behavior
+    treated every coupon's own discount (or price override) as if it were a
+    "price increase" on every single reschedule of a discounted booking,
+    since `total_amount` is already net of the coupon while the catalog
+    price never was.
+
+    Instead, this recomputes what the booking would cost TODAY under the
+    exact SAME coupon/override terms it already carries (`financial.
+    coupon_id`, `financial.base_price_override`, `financial.
+    final_price_override` — the frozen M8 pricing/snapshot structures,
+    never a parallel calculation), against the service's current catalog
+    price. The coupon is looked up directly and NOT re-validated/
+    re-reserved via `validate_and_reserve_coupon` — it was already redeemed
+    for this booking at original checkout time; only its discount
+    parameters (type/value/max_discount) are reused here to reproduce the
+    same deal, exactly satisfying "a coupon must not be accidentally
+    clawed back."
+    """
+    coupon = crud_coupon.get_coupon_or_404(db, financial.coupon_id) if financial.coupon_id is not None else None
+    return pricing.compute_price(
+        Decimal(branch_service.price),
+        Decimal(financial.base_price_override) if financial.base_price_override is not None else None,
+        coupon,
+        Decimal(financial.final_price_override) if financial.final_price_override is not None else None,
+    )
+
+
+def preview_reschedule_price_difference(db: Session, booking: Booking) -> Optional[dict]:
+    """
+    Manual-acceptance fix (Part 2 UI completion): a read-only preview of
+    what `apply_reschedule_price_difference` would compute RIGHT NOW,
+    without performing any reschedule and without creating any Payment or
+    Refund. Reuses the exact same `_reschedule_effective_price_breakdown`/
+    `_default_reschedule_payment_method` helpers the real collection path
+    calls, so the preview can never drift from the authoritative
+    calculation — no parallel pricing logic.
+
+    The result does not depend on the target date/time: rule 14's price
+    difference is driven only by the service's current catalog price
+    versus this booking's already-locked-in terms, never by which slot is
+    chosen, so staff can see the payment-method impact before even picking
+    a new date/time.
     """
     financial = db.query(BookingFinancial).filter(BookingFinancial.booking_id == booking.id).first()
     if financial is None:
         return None
 
     branch_service = get_branch_service_or_404(db, booking.branch_service_id)
-    new_effective_price = Decimal(branch_service.price)
+    breakdown = _reschedule_effective_price_breakdown(db, booking, financial, branch_service)
+    new_effective_price = breakdown.final_amount
+    previous_total = Decimal(financial.total_amount)
+    diff = (new_effective_price - previous_total).quantize(TWO_PLACES)
+
+    result = {"previous_amount": str(previous_total), "new_amount": str(new_effective_price), "difference": str(diff)}
+    if diff == 0:
+        result["action"] = None
+    elif diff > 0:
+        result["action"] = "CollectDifference"
+        result["amount_due"] = str(diff)
+        result["default_payment_method"] = _default_reschedule_payment_method(db, booking.id)
+    else:
+        result["action"] = "RefundIssued"
+        result["amount_estimate"] = str(-diff)
+    return result
+
+
+def apply_reschedule_price_difference(
+    db: Session, booking: Booking, actor_id: int, role_snapshot: str, *,
+    actor_is_customer: bool = False,
+    payment_method_override: Optional[str] = None,
+    override_reason: Optional[str] = None,
+    cash_received: Optional[Decimal] = None,
+) -> Optional[dict]:
+    """
+    rule 14: rescheduling normally retains the same service, but if the
+    service's current LIKE-FOR-LIKE effective price differs from what this
+    booking's amount was locked in at, the difference is collected (price
+    increased) or refunded (price decreased). Called after `crud_booking.
+    reschedule_booking` has already committed the schedule change — a
+    separate, best-effort financial follow-on step, consistent with the
+    rest of this module's multi-commit checkout flows.
+
+    A genuine DECREASE is always refunded against the booking's actual
+    captured payment(s) via the existing `_distribute_and_process_refund`
+    (already correctly routes Gateway-vs-Manual per each payment's own
+    method — unaffected by `payment_method_override`, which only applies to
+    collecting a genuine INCREASE).
+
+    A genuine INCREASE defaults to the booking's existing payment method
+    (`_default_reschedule_payment_method`). For a customer actor this is
+    always "RazorpayOnline" regardless of that default (customers never get
+    a Cash/ExternalManual/EmailPaymentLink choice — they are not physically
+    present to hand over cash or receive a bank transfer). For a staff
+    actor, `payment_method_override` may explicitly choose a different
+    method; a reason is required, and the override is recorded to the
+    audit log, whenever the chosen method differs from the existing
+    default — or when there is no default to begin with (Reserve Without
+    Payment), staff must simply choose one (no "override" framing applies
+    since nothing existed to override).
+    """
+    financial = db.query(BookingFinancial).filter(BookingFinancial.booking_id == booking.id).first()
+    if financial is None:
+        return None
+
+    branch_service = get_branch_service_or_404(db, booking.branch_service_id)
+    breakdown = _reschedule_effective_price_breakdown(db, booking, financial, branch_service)
+    new_effective_price = breakdown.final_amount
     previous_total = Decimal(financial.total_amount)
     diff = (new_effective_price - previous_total).quantize(TWO_PLACES)
     if diff == 0:
@@ -1318,23 +1959,104 @@ def apply_reschedule_price_difference(db: Session, booking: Booking, actor_id: i
         actor_id=actor_id, role_snapshot=role_snapshot, reason="Reschedule price difference (service price changed)",
     ))
     financial.total_amount = new_effective_price
+    financial.base_price = Decimal(branch_service.price)
 
     result = {"previous_amount": str(previous_total), "new_amount": str(new_effective_price), "difference": str(diff)}
 
     if diff > 0:
-        order = razorpay_service.create_order(diff, "INR", receipt=f"reschedule-diff-{booking.id}")
-        payment = Payment(
-            business_id=booking.business_id, branch_id=booking.branch_id, booking_id=booking.id,
-            payment_type="RescheduleCollection", method="RazorpayOnline", status="Created",
-            amount=diff, currency="INR", razorpay_order_id=order["id"], created_by=actor_id,
-        )
-        db.add(payment)
-        db.commit()
-        settings = get_settings()
-        result.update({
-            "action": "CollectDifference", "amount_due": str(diff),
-            "razorpay_order_id": order["id"], "razorpay_key_id": settings.RAZORPAY_KEY_ID,
-        })
+        default_method = _default_reschedule_payment_method(db, booking.id)
+
+        if actor_is_customer:
+            chosen_method = "RazorpayOnline"
+        else:
+            chosen_method = payment_method_override or default_method
+            if chosen_method is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="A payment method must be specified to collect this reschedule difference — "
+                           "this booking has no prior payment on record",
+                )
+            if chosen_method not in _RESCHEDULE_INPUT_METHODS:
+                raise HTTPException(status_code=400, detail=f"Invalid payment method: {chosen_method}")
+            if default_method is not None and chosen_method != default_method:
+                if not override_reason:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="A reason is required to collect this reschedule difference using a "
+                               "different payment method than the original",
+                    )
+                write_audit(
+                    db, business_id=booking.business_id, entity_type="Booking", entity_id=booking.id,
+                    action="RESCHEDULE_DIFFERENCE_PAYMENT_METHOD_OVERRIDDEN", performed_by=actor_id,
+                    previous_value=default_method, new_value=chosen_method, reason=override_reason, commit=False,
+                )
+
+        result["default_payment_method"] = default_method
+        result["payment_method"] = chosen_method
+
+        if chosen_method in ("RazorpayOnline", "EmailPaymentLink"):
+            if chosen_method == "EmailPaymentLink":
+                business_customer = crud_booking._get_business_customer_or_404(db, booking.customer_id)
+                customer_email = _business_customer_email(db, business_customer)
+                if not customer_email:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Customer has no email on file — use a different payment method instead",
+                    )
+                link = _call_razorpay(
+                    razorpay_service.create_payment_link,
+                    diff, "INR", description=f"Reschedule price difference for booking #{booking.id}",
+                    customer_name=customer_email, customer_email=customer_email,
+                )
+                razorpay_order_id = link["id"]
+                result["payment_link"] = link.get("short_url")
+            else:
+                order = _call_razorpay(razorpay_service.create_order, diff, "INR", receipt=f"reschedule-diff-{booking.id}")
+                razorpay_order_id = order["id"]
+
+            payment = Payment(
+                business_id=booking.business_id, branch_id=booking.branch_id, booking_id=booking.id,
+                payment_type="RescheduleCollection", method="RazorpayOnline", status="Created",
+                amount=diff, currency="INR", razorpay_order_id=razorpay_order_id, created_by=actor_id,
+            )
+            db.add(payment)
+            db.commit()
+            settings = get_settings()
+            result.update({
+                "action": "CollectDifference", "amount_due": str(diff),
+                "razorpay_order_id": razorpay_order_id, "razorpay_key_id": settings.RAZORPAY_KEY_ID,
+            })
+        elif chosen_method == "Cash":
+            if cash_received is None or Decimal(cash_received) < diff:
+                raise HTTPException(status_code=400, detail="Cash received is less than the amount due")
+            change_returned = (Decimal(cash_received) - diff).quantize(TWO_PLACES)
+            payment = Payment(
+                business_id=booking.business_id, branch_id=booking.branch_id, booking_id=booking.id,
+                payment_type="RescheduleCollection", method="Cash", status="Captured",
+                amount=diff, currency="INR", cash_received=Decimal(cash_received), change_returned=change_returned,
+                verified_by=actor_id, verified_at=datetime.utcnow(), created_by=actor_id,
+            )
+            db.add(payment)
+            db.flush()
+            financial.amount_paid = Decimal(financial.amount_paid) + diff
+            _apply_platform_fee(db, payment, financial)  # no-op: Cash never earns a platform fee (rule 19/Part 5)
+            db.commit()
+            result.update({
+                "action": "CollectDifference", "amount_due": str(diff), "amount_collected": str(diff),
+                "cash_received": str(cash_received), "change_returned": str(change_returned),
+            })
+        else:  # ExternalManual — Direct UPI/Bank Transfer, confirmed later like the original checkout flow
+            payment = Payment(
+                business_id=booking.business_id, branch_id=booking.branch_id, booking_id=booking.id,
+                payment_type="RescheduleCollection", method="ExternalManual", status="Created",
+                amount=diff, currency="INR", created_by=actor_id,
+            )
+            db.add(payment)
+            db.commit()
+            result.update({
+                "action": "CollectDifference", "amount_due": str(diff),
+                "requires_manual_confirmation": True,
+            })
     else:
         requested_refund = -diff
         total_captured, total_already_refunded = _total_captured_and_refunded(db, booking.id)
@@ -1382,12 +2104,78 @@ def verify_reschedule_price_difference_payment(db: Session, booking_id: int, pay
 
 def reschedule_customer_booking(db: Session, booking_id: int, payload, current_user: User) -> dict:
     booking = crud_booking.reschedule_booking(db, booking_id, payload, current_user, actor_is_customer=True)
-    price_result = apply_reschedule_price_difference(db, booking, current_user.id, "CUSTOMER")
+    price_result = apply_reschedule_price_difference(db, booking, current_user.id, "CUSTOMER", actor_is_customer=True)
     return {"booking": crud_booking.serialize_booking(db, booking), "price_adjustment": price_result}
 
 
 def reschedule_staff_booking(db: Session, booking_id: int, payload, current_user: User) -> dict:
     booking = crud_booking.reschedule_booking(db, booking_id, payload, current_user, actor_is_customer=False)
     role_snapshot = _actor_role_label(db, booking.business_id, current_user.id)
-    price_result = apply_reschedule_price_difference(db, booking, current_user.id, role_snapshot)
+    price_result = apply_reschedule_price_difference(
+        db, booking, current_user.id, role_snapshot, actor_is_customer=False,
+        payment_method_override=getattr(payload, "payment_method", None),
+        override_reason=getattr(payload, "override_reason", None),
+        cash_received=getattr(payload, "cash_received", None),
+    )
     return {"booking": crud_booking.serialize_booking(db, booking), "price_adjustment": price_result}
+
+
+def staff_confirm_reschedule_difference_payment(db: Session, booking_id: int, current_user: User) -> dict:
+    """
+    Staff manually confirms a reschedule-difference collection that was not
+    captured synchronously — an ExternalManual (Direct UPI/Bank Transfer)
+    collection, or an EmailPaymentLink the customer has since paid — the
+    same role `staff_confirm_external_payment` already plays for a NEW
+    booking's checkout hold, adapted here for a booking-level
+    "RescheduleCollection" Payment (no hold is involved in a reschedule).
+    """
+    booking = crud_booking.get_booking_or_404(db, booking_id)
+    branch = get_branch_by_id(db, booking.branch_id)
+    crud_booking._require_branch_booking_staff_access(db, branch, current_user)
+
+    payment = (
+        db.query(Payment)
+        .filter(Payment.booking_id == booking.id, Payment.payment_type == "RescheduleCollection", Payment.status == "Created")
+        .order_by(Payment.id.desc())
+        .first()
+    )
+    if not payment:
+        raise HTTPException(status_code=404, detail="No pending reschedule-difference payment found for this booking")
+
+    payment.status = "Captured"
+    payment.verified_by = current_user.id
+    payment.verified_at = datetime.utcnow()
+
+    financial = db.query(BookingFinancial).filter(BookingFinancial.booking_id == booking.id).first()
+    financial.amount_paid = Decimal(financial.amount_paid) + Decimal(payment.amount)
+    _apply_platform_fee(db, payment, financial)
+
+    write_audit(
+        db, business_id=booking.business_id, entity_type="Booking", entity_id=booking.id,
+        action="BOOKING_RESCHEDULE_DIFFERENCE_PAID", performed_by=current_user.id,
+        new_value=f"amount={payment.amount} method={payment.method}", commit=False,
+    )
+    db.commit()
+    db.refresh(booking)
+    return {"status": "Confirmed", "booking": crud_booking.serialize_booking(db, booking)}
+
+
+def get_payment_history(db: Session, booking_id: int) -> dict:
+    """Post-M8-hardening addition: read-only Payment/Refund trail for a
+    booking, for the frontend's payment/refund history views. Caller is
+    responsible for authorizing access to `booking_id` first (staff via
+    crud_booking.get_booking_for_staff, customer via get_booking_for_customer)
+    — this function itself performs no authorization."""
+    payments = (
+        db.query(Payment)
+        .filter(Payment.booking_id == booking_id)
+        .order_by(Payment.created_at)
+        .all()
+    )
+    refunds = (
+        db.query(Refund)
+        .filter(Refund.booking_id == booking_id)
+        .order_by(Refund.created_at)
+        .all()
+    )
+    return {"payments": payments, "refunds": refunds}

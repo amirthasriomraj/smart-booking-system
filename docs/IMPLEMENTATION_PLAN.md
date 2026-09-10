@@ -196,7 +196,9 @@ Branch booking eligibility respects the approved Branch lifecycle rules recorded
 
 ## Milestone 8 — Payments, Financial Policies & Promotions
 
-**Status: NEXT**
+**Status: COMPLETED**
+
+Implementation is complete and test-clean on `feature/payments-financial-policies` (not yet merged into `main`).
 
 Scope approved via the M8 pre-freeze audit and `IMPLEMENTATION_DECISIONS.md` ID-044–ID-056, which promote this functionality from the frozen PRD/TAS's Version 2/deferred scope into V1 (ID-044). The frozen PRD/TAS are not rewritten; ID-044–ID-056 are the authoritative record of what changed and why.
 
@@ -229,6 +231,18 @@ Milestone 8 owns every notification directly caused by M8 financial/payment beha
 ### Milestone 8 Required Infrastructure
 
 Celery, Celery Beat, and the project's existing Redis instance are added as the background/scheduled-job foundation (ID-049), used for the 72-hour reminder, the 48-hour balance-deadline enforcement, expired-hold cleanup, and other retryable financial/notification work. Every scheduled task re-validates current database state before mutating a booking/hold/payment and is idempotent.
+
+### Milestone 8 Acceptance Verification
+
+Full backend regression suite: **313 passed, 1 skipped, 0 failed** (including the two previously flaky `test_m8_cancellation_reschedule.py` tests, fixed to derive appointment date/time from a single computed datetime instead of splitting `date.today()` from a separately-offset `.time()`, which discarded midnight-rollover — a test-only fix, no production behavior changed).
+
+Live, real Razorpay Test Mode verification (not just mocked/unit-tested) was performed end-to-end against the actual customer UI and a live Razorpay Test Mode account:
+
+- Confirmed the backend correctly reads `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` / `RAZORPAY_WEBHOOK_SECRET` and authenticates against Razorpay's API (read-only call), with no secret values ever exposed.
+- Confirmed, live, that selecting a service/date/time and coupon/summary refreshes create/refresh only the `CustomerCheckout` `BookingHold` and never contact Razorpay — order creation happens only at the customer's own "Proceed to Pay" action, exactly per ID-046/ID-054.
+- Completed a real customer checkout through the actual frontend: hold → Razorpay order creation → Razorpay Checkout (Test Mode) → domestic test-card payment → server-side capture verification (`fetch_payment` status check, not signature alone) → `Booking` Confirmed + `BookingFinancial` `FullyPaid` with the correct amount.
+- Stood up a real webhook endpoint (ngrok tunnel to the local nginx entrypoint, `RAZORPAY_WEBHOOK_SECRET` configured) and confirmed a live, Razorpay-signed `payment.captured` delivery was correctly received, signature-verified, deduplicated by `provider_event_id`, and reconciled.
+- **Finalization-race defect found and fixed during this live verification (closing a gap in ID-056):** once the webhook was live, it and a client-triggered finalization (customer `/verify`, or staff manual confirm) could both call `_finalize_hold_to_booking` for the same hold/payment. Whichever call arrived second saw the hold already `Completed` and — before the fix — was treated as a genuinely lost/expired hold, triggering an automatic Razorpay refund of a payment that had, in fact, already paid for a real Confirmed booking. Fixed in `crud_payment._finalize_hold_to_booking` by making finalization idempotent on `payment.booking_id`: a payment already linked to a booking short-circuits to that existing booking rather than re-entering the lost-hold branch. The genuine lost/expired-hold auto-refund path (payment captured against a hold that never won any finalization) is unchanged and still covered by the pre-existing `test_payment_after_lost_hold_triggers_automatic_refund_not_double_booking`. Regression-tested both race directions (webhook-first and verify-first) in `backend/tests/test_m8_finalization_race.py`, confirming no duplicate `Booking`/`Payment` and no spurious `Refund` in either direction. Re-verified live afterward: a subsequent Test Mode payment captured, was reconciled by the webhook, and produced exactly one Confirmed booking with no refund.
 
 ---
 

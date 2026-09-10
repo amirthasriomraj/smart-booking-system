@@ -10,12 +10,18 @@ from schemas_booking import (
     StaffBookingCreateRequest,
     CustomerBookingCreateRequest,
     BookingRescheduleRequest,
+    StaffRescheduleRequest,
     BookingCancelRequest,
     BookingReassignResourceRequest,
     BookingResponse,
     BookingHistoryEntryResponse,
 )
-from schemas_payment import BookingActionResponse
+from schemas_payment import (
+    BookingActionResponse,
+    BookingPaymentHistoryResponse,
+    StaffRefundRequest,
+    StandaloneRefundResponse,
+)
 import crud_booking
 import crud_payment
 from dependencies import get_current_user
@@ -167,10 +173,34 @@ def get_booking_history(
     return crud_booking.get_booking_history(db, booking_id, current_user)
 
 
+@router.get("/bookings/{booking_id}/payments", response_model=BookingPaymentHistoryResponse)
+def get_booking_payment_history(
+    booking_id: int,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    crud_booking.get_booking_for_staff(db, booking_id, current_user)
+    return crud_payment.get_payment_history(db, booking_id)
+
+
+@router.get("/bookings/{booking_id}/reschedule-preview")
+def preview_reschedule_price_difference(
+    booking_id: int,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Read-only: what a reschedule's price difference and default payment
+    method would be right now (rule 14) — no reschedule, Payment, or
+    Refund is created. Lets the staff UI show the amount and preselect the
+    default payment method before the reschedule is actually submitted."""
+    booking = crud_booking.get_booking_for_staff(db, booking_id, current_user)
+    return crud_payment.preview_reschedule_price_difference(db, booking)
+
+
 @router.post("/bookings/{booking_id}/reschedule", response_model=BookingActionResponse)
 def reschedule_staff_booking(
     booking_id: int,
-    payload: BookingRescheduleRequest,
+    payload: StaffRescheduleRequest,
     background_tasks: BackgroundTasks,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -179,6 +209,20 @@ def reschedule_staff_booking(
     booking = crud_booking.get_booking_or_404(db, booking_id)
     _notify(background_tasks, send_booking_rescheduled_email, db, booking)
     _notify_price_adjustment(background_tasks, db, booking, result.get("price_adjustment"))
+    return _flatten_action_result(result)
+
+
+@router.post("/bookings/{booking_id}/reschedule-difference/confirm-payment", response_model=BookingActionResponse)
+def confirm_reschedule_difference_payment(
+    booking_id: int,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Staff manually confirms a reschedule-difference collection that
+    wasn't captured synchronously — Direct UPI/Bank Transfer, or an Email
+    Payment Link the customer has since paid — mirroring
+    `confirm_external_payment`'s role for the original checkout hold flow."""
+    result = crud_payment.staff_confirm_reschedule_difference_payment(db, booking_id, current_user)
     return _flatten_action_result(result)
 
 
@@ -195,6 +239,22 @@ def cancel_staff_booking(
     _notify(background_tasks, send_booking_cancelled_email, db, booking)
     _notify_refund_outcome(background_tasks, db, booking, result.get("refund"))
     return _flatten_action_result(result)
+
+
+@router.post("/bookings/{booking_id}/refund", response_model=StandaloneRefundResponse)
+def refund_booking(
+    booking_id: int,
+    payload: StaffRefundRequest,
+    background_tasks: BackgroundTasks,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Standalone refund (partial or full), independent of cancellation —
+    the booking's status/cancellation_reason are never touched here."""
+    result = crud_payment.staff_refund_booking(db, booking_id, payload, current_user)
+    booking = crud_booking.get_booking_or_404(db, booking_id)
+    _notify_refund_outcome(background_tasks, db, booking, result.get("refund"))
+    return result
 
 
 @router.post("/bookings/{booking_id}/reassign-resource", response_model=BookingResponse)
@@ -265,6 +325,16 @@ def get_customer_booking(
 ):
     booking = crud_booking.get_booking_for_customer(db, booking_id, current_user)
     return crud_booking.serialize_booking(db, booking)
+
+
+@router.get("/customer/bookings/{booking_id}/payments", response_model=BookingPaymentHistoryResponse)
+def get_customer_booking_payment_history(
+    booking_id: int,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    crud_booking.get_booking_for_customer(db, booking_id, current_user)
+    return crud_payment.get_payment_history(db, booking_id)
 
 
 @router.post("/customer/bookings/{booking_id}/reschedule", response_model=BookingActionResponse)

@@ -11,6 +11,8 @@ import StaffManagement from "./pages/StaffManagement"
 import ResourceManagement from "./pages/ResourceManagement"
 import ServiceManagement from "./pages/ServiceManagement"
 import BookingManagement from "./pages/BookingManagement"
+import CouponManagement from "./pages/CouponManagement"
+import PlatformFeeManagement from "./pages/PlatformFeeManagement"
 import ResetPassword from "./pages/ResetPassword"
 import AcceptInvitation from "./pages/AcceptInvitation"
 import CustomerRegister from "./pages/CustomerRegister"
@@ -62,6 +64,10 @@ function App() {
               and Resource User have no booking-management access
               (Milestone 7). */}
           <Route path="/business/bookings" element={<BookingManagement />} />
+          {/* Role-gated inside the component itself: Business Owner
+              (business-wide) and Branch Manager (own branch, subject to
+              approval) — Milestone 8 Coupons & Promotions (rule 10). */}
+          <Route path="/business/coupons" element={<CouponManagement />} />
         </Route>
 
         {/* Customer Portal — protected routes (Milestone 6, extended in Milestone 7) */}
@@ -74,6 +80,8 @@ function App() {
         {/* Admin routes */}
         <Route element={<ProtectedRoute adminOnly={true} />}>
           <Route path="/admin" element={<Admin />} />
+          {/* Milestone 8: Platform Admin fee authority (ID-051, rule 17-19). */}
+          <Route path="/admin/platform-fee" element={<PlatformFeeManagement />} />
         </Route>
 
         {/* Business Owner routes */}

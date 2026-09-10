@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, date, time
+from decimal import Decimal
 from typing import List, Optional, Tuple
 
 from sqlalchemy import text
@@ -24,6 +25,7 @@ from models import (
     Booking,
     BookingHistory,
     BookingHold,
+    BookingFinancial,
 )
 from audit import write_audit
 from crud_branch import get_branch_by_id
@@ -682,24 +684,21 @@ def reschedule_booking(db: Session, booking_id: int, payload, current_user: User
 
     # Milestone 8 Phase 8 (ID-047): customer self-reschedule is capped at
     # >=24h notice and once per booking; business-side reschedule remains
-    # unrestricted but must supply a reason whenever it overrides a
-    # restriction the customer could not have exercised themselves right
-    # now (i.e. exactly the situations a customer request would be
-    # rejected for below).
+    # unrestricted in timing/frequency. Manual-acceptance follow-up: a
+    # staff reschedule (Owner or Branch Manager) must ALWAYS supply a
+    # non-empty reason — not only when it overrides the customer policy —
+    # per the clarification recorded in IMPLEMENTATION_DECISIONS.md.
+    # Customer self-reschedule is unchanged: no reason is required.
     appointment_dt = datetime.combine(booking.booking_date, booking.start_time)
     hours_until_appointment = (appointment_dt - datetime.utcnow()).total_seconds() / 3600.0
-    customer_would_be_blocked = hours_until_appointment < 24 or booking.customer_reschedule_count >= 1
 
     if actor_is_customer:
         if hours_until_appointment < 24:
             raise HTTPException(status_code=409, detail="Reschedule requires at least 24 hours' notice")
         if booking.customer_reschedule_count >= 1:
             raise HTTPException(status_code=409, detail="You have already used your one self-reschedule for this booking")
-    elif customer_would_be_blocked and not getattr(payload, "reason", None):
-        raise HTTPException(
-            status_code=400,
-            detail="A reason is required to reschedule outside the customer policy (< 24h notice or reschedule limit already used)",
-        )
+    elif not (getattr(payload, "reason", None) or "").strip():
+        raise HTTPException(status_code=400, detail="A reason is required to reschedule this booking")
 
     branch_service = get_branch_service_or_404(db, booking.branch_service_id)
     _check_bookable_state(business, branch, branch_service)  # §19.2: re-validate availability
@@ -781,6 +780,16 @@ def cancel_booking(db: Session, booking_id: int, payload, current_user: User, *,
         _require_owning_customer(db, booking, current_user)
     else:
         _require_branch_booking_staff_access(db, branch, current_user)
+        # Manual-acceptance follow-up: a staff cancellation (Owner or
+        # Branch Manager) must ALWAYS supply a non-empty cancellation
+        # reason — per the clarification recorded in
+        # IMPLEMENTATION_DECISIONS.md. This is independent of, and does
+        # not replace, the separate refund-override-reason requirement
+        # enforced in crud_payment._apply_cancellation_refund when
+        # refund_override_amount is used. Customer self-cancel is
+        # unchanged: no reason is required (PRD §20 baseline).
+        if not (getattr(payload, "reason", None) or "").strip():
+            raise HTTPException(status_code=400, detail="A reason is required to cancel this booking")
 
     _require_active_status(booking)
 
@@ -963,6 +972,32 @@ def get_booking_for_customer(db: Session, booking_id: int, current_user: User) -
 # SERIALIZATION
 # -------------------------
 
+# Mirrors crud_payment._REFUND_COMMITTED_STATUSES exactly (Initiated
+# counts as already "spoken for", not yet refundable again, since a
+# Razorpay refund is asynchronous). Duplicated here (rather than imported)
+# only because crud_payment already imports crud_booking, not the reverse.
+_REFUND_COMMITTED_STATUSES = ("Completed", "Initiated")
+
+
+def _refundable_amount(db: Session, booking_id: int) -> Decimal:
+    """Mirrors crud_payment._total_captured_and_refunded's refundable
+    ceiling (captured payments minus committed refunds) — see that
+    function's docstring for the full rationale. Used only for the
+    read-only `refundable_amount` field on BookingResponse; the standalone
+    refund endpoint itself still enforces the ceiling independently via
+    the canonical crud_payment function at write time."""
+    from models import Payment, Refund
+    captured = db.query(Payment).filter(Payment.booking_id == booking_id, Payment.status == "Captured").all()
+    total_captured = sum((Decimal(p.amount) for p in captured), Decimal("0"))
+    committed_refunds = (
+        db.query(Refund)
+        .filter(Refund.booking_id == booking_id, Refund.status.in_(_REFUND_COMMITTED_STATUSES))
+        .all()
+    )
+    total_refunded = sum((Decimal(r.final_amount) for r in committed_refunds), Decimal("0"))
+    return total_captured - total_refunded
+
+
 def serialize_booking(db: Session, booking: Booking) -> dict:
     branch = db.query(Branch).filter(Branch.id == booking.branch_id).first()
     business_customer = db.query(BusinessCustomer).filter(BusinessCustomer.id == booking.customer_id).first()
@@ -983,6 +1018,7 @@ def serialize_booking(db: Session, booking: Booking) -> dict:
         if branch_service else None
     )
     resource = db.query(Resource).filter(Resource.id == booking.resource_id).first()
+    financial = db.query(BookingFinancial).filter(BookingFinancial.booking_id == booking.id).first()
 
     return {
         "id": booking.id,
@@ -1005,6 +1041,14 @@ def serialize_booking(db: Session, booking: Booking) -> dict:
         "created_by": booking.created_by,
         "created_at": booking.created_at,
         "updated_at": booking.updated_at,
+        "financial_status": financial.financial_status if financial else None,
+        "total_amount": financial.total_amount if financial else None,
+        "amount_paid": financial.amount_paid if financial else None,
+        "amount_refunded": financial.amount_refunded if financial else None,
+        "deposit_amount": financial.deposit_amount if financial else None,
+        "balance_due": financial.balance_due if financial else None,
+        "balance_due_at": financial.balance_due_at if financial else None,
+        "refundable_amount": _refundable_amount(db, booking.id) if financial else Decimal("0"),
     }
 
 

@@ -23,6 +23,9 @@ export default function Navbar() {
   const canManageBookings =
     user?.business?.status === "Active" &&
     ["BUSINESS_OWNER", "BRANCH_MANAGER"].includes(user?.business?.role_code)
+  const canManageCoupons =
+    user?.business?.status === "Active" &&
+    ["BUSINESS_OWNER", "BRANCH_MANAGER"].includes(user?.business?.role_code)
   const isCustomer = !!user?.customer
 
   const handleLogout = async () => {
@@ -59,6 +62,8 @@ export default function Navbar() {
         <>
           {" | "}
           <Link to="/admin">Admin</Link>
+          {" | "}
+          <Link to="/admin/platform-fee">Platform Fee</Link>
         </>
       )}
 
@@ -96,6 +101,13 @@ export default function Navbar() {
         <>
           {" | "}
           <Link to="/business/bookings">Bookings</Link>
+        </>
+      )}
+
+      {canManageCoupons && (
+        <>
+          {" | "}
+          <Link to="/business/coupons">Coupons</Link>
         </>
       )}
 

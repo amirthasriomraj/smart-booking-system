@@ -738,3 +738,17 @@ M8 must be safe under concurrency and safe to retry. Specifically: (1) a payment
 
 **Reason:**
 Resolved during M8 pre-freeze audit follow-up per explicit user decision, closing audit findings H (double booking, payment-after-expiry, duplicate webhooks/refunds, coupon races) and G-adjacent idempotency gaps with concrete, binding requirements rather than leaving them as open risks for the implementation plan to rediscover.
+
+---
+
+## ID-057 — Staff Cancellation and Reschedule Always Require a Non-Empty Reason
+
+**Decision:**
+A staff-initiated (Business Owner or Branch Manager) booking cancellation or reschedule always requires a non-empty reason, unconditionally — not only when it overrides the customer self-service policy (>=24h notice / once-only reschedule, ID-035/ID-047) or the calculated refund amount (rule 16). This supersedes the earlier PRD §20 baseline of "reason optional unless overriding" for staff actors specifically. The reason is persisted through the existing mechanisms only — `Booking.cancellation_reason` and the `BookingHistory`/`AuditLog` `reason` field already used for these actions — no new column or table is introduced.
+
+This is independent of, and does not replace, the pre-existing refund-override-reason requirement (rule 16: a reason is mandatory whenever `refund_override_amount` is supplied and differs from the calculated amount): both requirements apply to a staff cancellation, and in practice the same single `reason` field satisfies both once it is unconditionally required.
+
+Customer self-cancellation and self-reschedule are explicitly unaffected — no reason is required from a customer actor, matching ID-035's existing baseline.
+
+**Reason:**
+Resolved per explicit user decision during manual acceptance testing of M8: staff cancellations/reschedules were being recorded with no explanation in the ordinary case, which is insufficient for accountability/audit review of financial actions (refund calculations, revenue-affecting reschedules) taken on a customer's behalf.

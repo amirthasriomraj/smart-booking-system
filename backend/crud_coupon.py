@@ -222,6 +222,7 @@ def validate_and_reserve_coupon(
     customer_id: int,
     booking_amount: Decimal,
     booking_date: date,
+    exclude_hold_id: Optional[int] = None,
 ) -> Coupon:
     """
     Full condition chain from rule 10, plus the ID-056 concurrency-safe
@@ -231,6 +232,18 @@ def validate_and_reserve_coupon(
     available. Does not itself create any row — "reservation" happens when
     the caller embeds this coupon's id in the `BookingHold.price_snapshot`
     it creates immediately afterward, in the same transaction/lock.
+
+    `exclude_hold_id` (manual-acceptance fix): a hold refresh re-validates
+    the coupon terms BEFORE releasing the hold it is about to replace (so
+    an invalid new coupon/payment-option leaves that still-good hold
+    untouched — see `refresh_customer_checkout_hold`). Without this
+    exclusion, a hold that already carries this same coupon in its own
+    `price_snapshot` would count as a reservation against itself when its
+    own refresh re-validates the identical coupon, permanently exhausting
+    a `per_customer_usage_limit` of 1 on the very first re-refresh. Only
+    the one named hold is excluded — every other Active hold (including
+    every other customer's, and any other genuinely separate hold of this
+    same customer) still counts exactly as before.
     """
     coupon = (
         db.query(Coupon)
@@ -258,11 +271,12 @@ def validate_and_reserve_coupon(
     if booking_amount < coupon.min_booking_amount:
         raise HTTPException(status_code=409, detail="Booking amount is below the coupon's minimum")
 
-    active_holds = (
-        db.query(BookingHold)
-        .filter(BookingHold.status == "Active", BookingHold.expires_at > datetime.utcnow())
-        .all()
+    active_holds_query = db.query(BookingHold).filter(
+        BookingHold.status == "Active", BookingHold.expires_at > datetime.utcnow()
     )
+    if exclude_hold_id is not None:
+        active_holds_query = active_holds_query.filter(BookingHold.id != exclude_hold_id)
+    active_holds = active_holds_query.all()
     reservations_for_coupon = [h for h in active_holds if (h.price_snapshot or {}).get("coupon_id") == coupon.id]
 
     if coupon.total_usage_limit is not None:

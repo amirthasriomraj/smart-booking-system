@@ -597,7 +597,7 @@ def test_staff_reschedule_preserves_booking_id_and_writes_history():
     new_date = BOOKING_DATE + timedelta(days=7)
     reschedule = client.post(
         f"/api/v1/bookings/{created['id']}/reschedule",
-        json={"booking_date": str(new_date), "start_time": "10:00:00"},
+        json={"booking_date": str(new_date), "start_time": "10:00:00", "reason": "Staff-initiated reschedule"},
         headers=_auth(setup["owner_token"]),
     )
     assert reschedule.status_code == 200, reschedule.text
@@ -731,7 +731,10 @@ def test_staff_reschedule_can_explicitly_reassign_resource():
     # may explicitly request a different (eligible) resource.
     reschedule = client.post(
         f"/api/v1/bookings/{booking['id']}/reschedule",
-        json={"booking_date": str(BOOKING_DATE), "start_time": "10:00:00", "resource_id": second_resource["id"]},
+        json={
+            "booking_date": str(BOOKING_DATE), "start_time": "10:00:00", "resource_id": second_resource["id"],
+            "reason": "Reassigning to a different resource",
+        },
         headers=_auth(setup["owner_token"]),
     )
     assert reschedule.status_code == 200, reschedule.text

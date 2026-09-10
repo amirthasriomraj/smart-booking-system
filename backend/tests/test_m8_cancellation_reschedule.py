@@ -156,8 +156,14 @@ def test_cancellation_zero_refund_under_24h():
     db = SessionLocal()
     try:
         b = db.query(Booking).filter(Booking.id == booking["id"]).first()
-        b.booking_date = date.today()
-        b.start_time = (datetime.utcnow() + timedelta(hours=5)).time()
+        # Derive date and time from the SAME target datetime — splitting
+        # date.today() from (utcnow() + 5h).time() independently silently
+        # produces a past/wrong-day appointment whenever "now" is within 5
+        # hours of midnight UTC, since the date rollover from adding 5
+        # hours is discarded.
+        target_dt = datetime.utcnow() + timedelta(hours=5)
+        b.booking_date = target_dt.date()
+        b.start_time = target_dt.time()
         db.commit()
     finally:
         db.close()
@@ -245,13 +251,33 @@ def test_staff_refund_override_applies_final_amount():
     assert Decimal(body["refund"]["final_amount"]) == override_amount
 
 
-def test_plain_staff_cancellation_does_not_require_reason():
-    """PRD §20 baseline unchanged: reason is optional unless overriding the refund."""
+def test_plain_staff_cancellation_now_requires_reason():
+    """Manual-acceptance follow-up: a staff cancellation always requires a
+    non-empty cancellation reason (see IMPLEMENTATION_DECISIONS.md) — no
+    longer the old PRD §20 baseline of "optional unless overriding the
+    refund". Customer self-cancel is unaffected (still no reason required)."""
     setup = _bookable_setup()
     customer_token = _customer_token_for(setup)
     booking = _fully_paid_booking(setup, customer_token)
 
-    cancel = client.post(f"/api/v1/bookings/{booking['id']}/cancel", json={}, headers=_auth(setup["owner_token"]))
+    without_reason = client.post(f"/api/v1/bookings/{booking['id']}/cancel", json={}, headers=_auth(setup["owner_token"]))
+    assert without_reason.status_code == 400, without_reason.text
+
+    with_reason = client.post(
+        f"/api/v1/bookings/{booking['id']}/cancel",
+        json={"reason": "Staff-initiated cancellation"},
+        headers=_auth(setup["owner_token"]),
+    )
+    assert with_reason.status_code == 200, with_reason.text
+
+
+def test_customer_self_cancel_still_does_not_require_reason():
+    """Customer-side rule is explicitly unchanged by the staff-reason fix."""
+    setup = _bookable_setup()
+    customer_token = _customer_token_for(setup)
+    booking = _fully_paid_booking(setup, customer_token)
+
+    cancel = client.post(f"/api/v1/customer/bookings/{booking['id']}/cancel", json={}, headers=_auth(customer_token))
     assert cancel.status_code == 200, cancel.text
 
 
@@ -377,8 +403,12 @@ def test_customer_reschedule_rejected_under_24h():
     db = SessionLocal()
     try:
         b = db.query(Booking).filter(Booking.id == booking["id"]).first()
-        b.booking_date = date.today()
-        b.start_time = (datetime.utcnow() + timedelta(hours=5)).time()
+        # See test_cancellation_zero_refund_under_24h for why date/time must
+        # come from the same target datetime rather than being split
+        # independently.
+        target_dt = datetime.utcnow() + timedelta(hours=5)
+        b.booking_date = target_dt.date()
+        b.start_time = target_dt.time()
         db.commit()
     finally:
         db.close()
@@ -411,7 +441,7 @@ def test_customer_reschedule_allowed_once_then_rejected():
     assert second.status_code == 409, second.text
 
 
-def test_staff_reschedule_requires_reason_only_when_overriding():
+def test_staff_reschedule_requires_reason_when_overriding_exhausted_allowance():
     setup = _bookable_setup()
     customer_token = _customer_token_for(setup)
     booking = _fully_paid_booking(setup, customer_token, booking_date=FAR_ENOUGH_DATE)
@@ -437,6 +467,46 @@ def test_staff_reschedule_requires_reason_only_when_overriding():
         headers=_auth(setup["owner_token"]),
     )
     assert with_reason.status_code == 200, with_reason.text
+
+
+def test_staff_reschedule_requires_reason_even_without_overriding_customer_policy():
+    """Manual-acceptance follow-up: staff reschedule now ALWAYS requires a
+    reason, not only when it overrides the customer's own reschedule
+    policy (>=24h notice, once-only) — see IMPLEMENTATION_DECISIONS.md."""
+    setup = _bookable_setup()
+    customer_token = _customer_token_for(setup)
+    booking = _fully_paid_booking(setup, customer_token, booking_date=FAR_ENOUGH_DATE)
+
+    # Far enough out and never rescheduled by the customer yet, so a
+    # customer request here would NOT be blocked — the old rule allowed
+    # staff to skip the reason in exactly this case.
+    without_reason = client.post(
+        f"/api/v1/bookings/{booking['id']}/reschedule",
+        json={"booking_date": str(FAR_ENOUGH_DATE + timedelta(weeks=1)), "start_time": "10:00:00"},
+        headers=_auth(setup["owner_token"]),
+    )
+    assert without_reason.status_code == 400, without_reason.text
+
+    with_reason = client.post(
+        f"/api/v1/bookings/{booking['id']}/reschedule",
+        json={"booking_date": str(FAR_ENOUGH_DATE + timedelta(weeks=1)), "start_time": "10:00:00", "reason": "Resource maintenance"},
+        headers=_auth(setup["owner_token"]),
+    )
+    assert with_reason.status_code == 200, with_reason.text
+
+
+def test_customer_self_reschedule_still_does_not_require_reason():
+    """Customer-side rule is explicitly unchanged by the staff-reason fix."""
+    setup = _bookable_setup()
+    customer_token = _customer_token_for(setup)
+    booking = _fully_paid_booking(setup, customer_token, booking_date=FAR_ENOUGH_DATE)
+
+    reschedule = client.post(
+        f"/api/v1/customer/bookings/{booking['id']}/reschedule",
+        json={"booking_date": str(FAR_ENOUGH_DATE + timedelta(weeks=1)), "start_time": "10:00:00"},
+        headers=_auth(customer_token),
+    )
+    assert reschedule.status_code == 200, reschedule.text
 
 
 # -----------------------------

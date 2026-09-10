@@ -369,8 +369,24 @@ export const rescheduleBooking = (bookingId, data) => {
   return api.post(`/bookings/${bookingId}/reschedule`, data)
 }
 
-export const cancelBooking = (bookingId, reason) => {
-  return api.post(`/bookings/${bookingId}/cancel`, { reason })
+// Read-only: the price difference/default payment method a reschedule
+// would produce right now (rule 14) — no reschedule/Payment/Refund yet.
+export const previewReschedulePriceDifference = (bookingId) => {
+  return api.get(`/bookings/${bookingId}/reschedule-preview`)
+}
+
+// Staff manually confirms a reschedule-difference collection that wasn't
+// captured synchronously (Direct UPI/Bank Transfer, or an Email Payment
+// Link the customer has since paid).
+export const confirmRescheduleDifferencePayment = (bookingId) => {
+  return api.post(`/bookings/${bookingId}/reschedule-difference/confirm-payment`)
+}
+
+export const cancelBooking = (bookingId, reason, refundOverrideAmount) => {
+  return api.post(`/bookings/${bookingId}/cancel`, {
+    reason,
+    refund_override_amount: refundOverrideAmount || undefined,
+  })
 }
 
 export const reassignBookingResource = (bookingId, resourceId) => {
@@ -398,6 +414,141 @@ export const rescheduleCustomerBooking = (bookingId, data) => {
 
 export const cancelCustomerBooking = (bookingId, reason) => {
   return api.post(`/customer/bookings/${bookingId}/cancel`, { reason })
+}
+
+/*
+Payments / Checkout helpers (Milestone 8)
+*/
+
+// Customer checkout
+export const customerCheckout = (data) => api.post("/customer/checkout", data)
+
+export const verifyCustomerCheckout = (holdId, data) => {
+  return api.post(`/customer/checkout/${holdId}/verify`, data)
+}
+
+// Customer checkout review — selecting a slot creates a hold with the
+// authoritative price/coupon/deposit breakdown (no Booking yet); changing
+// the coupon or payment option requires refreshing it for the same slot.
+export const customerCreateCheckoutHold = (data) => api.post("/customer/checkout/hold", data)
+
+export const customerRefreshCheckoutHold = (holdId, data) => {
+  return api.post(`/customer/checkout/${holdId}/refresh`, data)
+}
+
+// Phase 2 — called only on the final Book/Proceed to Pay click; creates
+// the real Razorpay order for an already-reviewed hold.
+export const customerCreateCheckoutPayment = (holdId) => {
+  return api.post(`/customer/checkout/${holdId}/pay`)
+}
+
+export const initiateBalancePayment = (bookingId) => {
+  return api.post(`/customer/bookings/${bookingId}/pay-balance`)
+}
+
+export const verifyBalancePayment = (bookingId, data) => {
+  return api.post(`/customer/bookings/${bookingId}/pay-balance/verify`, data)
+}
+
+export const verifyReschedulePriceDifference = (bookingId, data) => {
+  return api.post(`/customer/bookings/${bookingId}/pay-reschedule-difference/verify`, data)
+}
+
+// Staff checkout — two-phase: selecting a slot only acquires a 10-minute
+// hold with the authoritative price/coupon/deposit breakdown (Phase 1);
+// a separate finalize call per payment method actually creates the
+// Payment/Booking (Phase 2), using that same hold_id.
+export const staffCreateCheckoutHold = (branchId, data) => {
+  return api.post(`/branches/${branchId}/checkout/hold`, data)
+}
+
+// Recomputes the summary for the SAME slot after a pricing-affecting
+// input changes (coupon/price override/payment option); safely releases
+// the existing hold and acquires a new one under the new terms.
+export const staffRefreshCheckoutHold = (holdId, data) => {
+  return api.post(`/holds/${holdId}/refresh`, data)
+}
+
+// Explicitly releases an abandoned hold — called when the customer/
+// branch/service/date changes underneath an already-acquired hold.
+export const staffDiscardCheckoutHold = (holdId) => {
+  return api.post(`/holds/${holdId}/discard`)
+}
+
+export const staffFinalizeCashHold = (holdId, data) => {
+  return api.post(`/holds/${holdId}/checkout/cash`, data)
+}
+
+export const staffFinalizeEmailLinkHold = (holdId) => {
+  return api.post(`/holds/${holdId}/checkout/email-link`)
+}
+
+export const staffFinalizeExternalHold = (holdId) => {
+  return api.post(`/holds/${holdId}/checkout/external`)
+}
+
+export const confirmExternalPayment = (holdId) => {
+  return api.post(`/holds/${holdId}/confirm-external-payment`)
+}
+
+export const staffReserveWithoutPayment = (branchId, data) => {
+  return api.post(`/branches/${branchId}/checkout/reserve-without-payment`, data)
+}
+
+// Payment / refund history
+export const getBookingPaymentHistory = (bookingId) => {
+  return api.get(`/bookings/${bookingId}/payments`)
+}
+
+export const getCustomerBookingPaymentHistory = (bookingId) => {
+  return api.get(`/customer/bookings/${bookingId}/payments`)
+}
+
+// Standalone refund (partial/full), independent of cancellation.
+export const refundBooking = (bookingId, data) => {
+  return api.post(`/bookings/${bookingId}/refund`, data)
+}
+
+/*
+Coupon helpers (Milestone 8)
+*/
+
+export const listCoupons = (businessId) => api.get(`/businesses/${businessId}/coupons`)
+
+export const createCoupon = (businessId, data) => {
+  return api.post(`/businesses/${businessId}/coupons`, data)
+}
+
+export const getCoupon = (couponId) => api.get(`/coupons/${couponId}`)
+
+export const approveCoupon = (couponId, comments) => {
+  return api.post(`/coupons/${couponId}/approve`, { comments })
+}
+
+export const rejectCoupon = (couponId, comments) => {
+  return api.post(`/coupons/${couponId}/reject`, { comments })
+}
+
+export const setCouponStatus = (couponId, status) => {
+  return api.patch(`/coupons/${couponId}/status`, { status })
+}
+
+/*
+Platform Fee configuration helpers (Milestone 8, Platform Admin)
+*/
+
+export const getPlatformFeeSettings = () => api.get("/platform-fee-settings")
+
+export const setDefaultPlatformFee = (data) => {
+  return api.post("/platform-fee-settings/default", data)
+}
+
+export const setBusinessFeeOverride = (businessId, data) => {
+  return api.post(`/businesses/${businessId}/fee-override`, data)
+}
+
+export const removeBusinessFeeOverride = (businessId, data) => {
+  return api.post(`/businesses/${businessId}/fee-override/remove`, data)
 }
 
 export default api
