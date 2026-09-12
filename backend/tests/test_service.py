@@ -74,7 +74,7 @@ def _register_business(business_name=None, username=None, email=None):
     payload = {
         "username": username or f"owner_{unique}",
         "email": email or f"{unique}@example.com",
-        "password": "Testpass123",
+        "password": "Testpass123!",
         "business_name": business_name or f"Business {unique}",
         "business_category_id": _category_id(),
         "country_id": _country_id(),
@@ -96,7 +96,7 @@ def _promote_to_platform_admin(username):
         db.close()
 
 
-def _login(username, password="Testpass123"):
+def _login(username, password="Testpass123!"):
     response = client.post(
         "/api/v1/auth/login",
         data={"username": username, "password": password},
@@ -195,7 +195,7 @@ def _invite_and_accept_staff(business_id, owner_token, role_code, branch_id=None
     username = f"user_{unique}"
     accept = client.post(
         "/api/v1/auth/accept-invitation",
-        json={"token": captured["token"], "username": username, "password": "Testpass123"},
+        json={"token": captured["token"], "username": username, "password": "Testpass123!"},
     )
     assert accept.status_code == 200, accept.text
     return username, _login(username)

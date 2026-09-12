@@ -6,6 +6,7 @@ from typing import Optional, List
 from models import User, Business, BusinessMember, Role, Branch, BranchWorkingHours, Country
 from audit import write_audit
 from dependencies import user_has_role
+from pagination import paginate
 import crud_service
 
 BUSINESS_OWNER_ROLE_CODE = "BUSINESS_OWNER"
@@ -50,12 +51,19 @@ def get_branch_by_id(db: Session, branch_id: int) -> Branch:
 
 
 def get_branch_for_viewer(db: Session, branch_id: int, current_user: User) -> Branch:
-    """Platform Admin may view any branch; otherwise must own the branch's business."""
+    """Platform Admin may view any branch; Business Owner (business-wide) or
+    the Branch Manager currently assigned to this branch may also view it
+    (M9 Phase 6c follow-up fix: the "Branch Overview" page needs this for
+    the Branch Manager it was built for — this endpoint was still Owner-only
+    even after working-hours access was extended)."""
     branch = get_branch_by_id(db, branch_id)
     if user_has_role(db, current_user.id, "PLATFORM_ADMIN"):
         return branch
-    _require_active_owner_membership(db, branch.business_id, current_user)
-    return branch
+    if crud_service._has_active_role(db, branch.business_id, current_user.id, "BUSINESS_OWNER"):
+        return branch
+    if crud_service._get_manager_current_branch_id(db, branch.business_id, current_user.id) == branch.id:
+        return branch
+    raise HTTPException(status_code=403, detail="Not authorized to view this branch")
 
 
 # -------------------------
@@ -110,15 +118,31 @@ def create_branch(db: Session, business_id: int, payload, current_user: User) ->
     return branch
 
 
-def get_branches_for_business(db: Session, business_id: int, current_user: User) -> List[Branch]:
-    """BR-015: Business Owners have complete visibility across every branch of their business."""
+def get_branches_for_business(
+    db: Session,
+    business_id: int,
+    current_user: User,
+    page: int = 1,
+    page_size: int = 20,
+    search: Optional[str] = None,
+) -> dict:
+    """BR-015: Business Owners have complete visibility across every branch of their business.
+    Search/pagination per PRD §38-40."""
     _require_active_owner_membership(db, business_id, current_user)
-    return (
-        db.query(Branch)
-        .filter(Branch.business_id == business_id)
-        .order_by(Branch.created_at.desc())
+
+    query = db.query(Branch).filter(Branch.business_id == business_id)
+    if search:
+        query = query.filter(Branch.branch_name.ilike(f"%{search}%"))
+
+    total = query.count()
+    rows = (
+        query.order_by(Branch.created_at.desc())
+        .limit(page_size)
+        .offset((page - 1) * page_size)
         .all()
     )
+
+    return paginate(rows, total, page, page_size)
 
 
 def update_branch(db: Session, branch_id: int, payload, current_user: User) -> Branch:
@@ -286,9 +310,21 @@ def reject_branch(db: Session, branch_id: int, admin_user: User, reason: Optiona
 # BRANCH WORKING HOURS (BR-014)
 # -------------------------
 
+def _require_branch_working_hours_access(db: Session, branch: Branch, current_user: User) -> None:
+    """M9 Phase 6c: PRD §10.3 lists 'Manage branch working hours' as a Branch
+    Manager responsibility, not just the Business Owner's. Mirrors the
+    owner-or-assigned-manager pattern already used for branch reports
+    (crud_reports._require_branch_report_access)."""
+    if crud_service._has_active_role(db, branch.business_id, current_user.id, "BUSINESS_OWNER"):
+        return
+    if crud_service._get_manager_current_branch_id(db, branch.business_id, current_user.id) == branch.id:
+        return
+    raise HTTPException(status_code=403, detail="Not authorized to manage working hours for this branch")
+
+
 def get_working_hours(db: Session, branch_id: int, current_user: User) -> List[BranchWorkingHours]:
     branch = get_branch_by_id(db, branch_id)
-    _require_active_owner_membership(db, branch.business_id, current_user)
+    _require_branch_working_hours_access(db, branch, current_user)
     return (
         db.query(BranchWorkingHours)
         .filter(BranchWorkingHours.branch_id == branch_id)
@@ -299,7 +335,7 @@ def get_working_hours(db: Session, branch_id: int, current_user: User) -> List[B
 
 def upsert_working_hours(db: Session, branch_id: int, payload, current_user: User) -> List[BranchWorkingHours]:
     branch = get_branch_by_id(db, branch_id)
-    _require_active_owner_membership(db, branch.business_id, current_user)
+    _require_branch_working_hours_access(db, branch, current_user)
 
     existing = {
         row.weekday: row

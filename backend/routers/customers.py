@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
@@ -18,6 +18,8 @@ from schemas_customer import (
 )
 import crud_customer
 from dependencies import get_current_user
+from services import notification_service
+from services.email_service import send_welcome_email
 
 router = APIRouter(tags=["Customers"])
 
@@ -35,8 +37,15 @@ def get_db():
 # -----------------------------
 
 @router.post("/customers/register", response_model=CustomerProfileResponse)
-def register_customer(payload: CustomerRegisterRequest, db: Session = Depends(get_db)):
-    return crud_customer.register_customer(db, payload)
+def register_customer(payload: CustomerRegisterRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    result = crud_customer.register_customer(db, payload)
+    background_tasks.add_task(
+        notification_service.log_and_send,
+        result["user_id"], "Welcome",
+        lambda: send_welcome_email(payload.email, payload.first_name),
+        None, "PlatformCustomer", result["platform_customer_id"],
+    )
+    return result
 
 
 # -----------------------------
@@ -77,12 +86,13 @@ def list_business_customers(
     business_id: int,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
-    limit: int = Query(20, le=100),
-    offset: int = Query(0, ge=0),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
     sort: str = "-created_at",
     search: Optional[str] = None,
+    status: Optional[str] = None,
 ):
-    return crud_customer.list_business_customers(db, business_id, current_user, limit, offset, sort, search)
+    return crud_customer.list_business_customers(db, business_id, current_user, page, page_size, sort, search, status)
 
 
 @router.get("/business-customers/{business_customer_id}", response_model=BusinessCustomerResponse)

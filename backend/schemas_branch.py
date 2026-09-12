@@ -59,6 +59,14 @@ class BranchResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PaginatedBranches(BaseModel):
+    items: List[BranchResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
 # -------------------------
 # BRANCH WORKING HOURS
 # -------------------------

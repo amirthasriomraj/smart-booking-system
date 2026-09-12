@@ -101,6 +101,14 @@ class ResourceResponse(BaseModel):
     booking_buffer_minutes: Optional[int] = None
     created_at: datetime
 
+
+class PaginatedResources(BaseModel):
+    items: List[ResourceResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
     model_config = ConfigDict(from_attributes=True)
 
 

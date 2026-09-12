@@ -19,6 +19,10 @@ const emptyForm = {
 export default function StaffManagement() {
   const { user } = useContext(AuthContext)
   const businessId = user?.business?.id
+  // HR can view staff and transfer Branch Managers (PRD §10.4); inviting
+  // and deactivating staff remain Business Owner-only (ID-006 and the
+  // existing deactivation authorization, both unchanged by M9 Phase 6).
+  const isOwner = user?.business?.role_code === "BUSINESS_OWNER"
 
   const [staff, setStaff] = useState([])
   const [branches, setBranches] = useState([])
@@ -39,7 +43,7 @@ export default function StaffManagement() {
     }
     loadStaff()
     listBranchesForBusiness(businessId)
-      .then((response) => setBranches(response.data.filter((b) => b.approval_status === "Approved")))
+      .then((response) => setBranches(response.data.items.filter((b) => b.approval_status === "Approved")))
       .catch(() => {})
   }, [businessId, loadStaff])
 
@@ -115,7 +119,7 @@ export default function StaffManagement() {
             {" — status: "}{member.status}
             {member.current_branch_name && <>{" — branch: "}{member.current_branch_name}</>}
             {" "}
-            {member.status === "Pending" && (
+            {isOwner && member.status === "Pending" && (
               <button onClick={() => handleResend(member.id)}>Resend Invite</button>
             )}
             {" "}
@@ -136,48 +140,52 @@ export default function StaffManagement() {
               </>
             )}
             {" "}
-            {member.status !== "Inactive" && (
+            {isOwner && member.status !== "Inactive" && (
               <button onClick={() => handleDeactivate(member.id)}>Deactivate</button>
             )}
           </li>
         ))}
       </ul>
 
-      <h2>Invite Staff</h2>
-      <form onSubmit={handleInvite}>
-        <input
-          type="email"
-          placeholder="Email"
-          value={form.email}
-          onChange={(e) => setForm({ ...form, email: e.target.value })}
-          required
-        />
-        <br />
-        <select
-          value={form.role_code}
-          onChange={(e) => setForm({ ...form, role_code: e.target.value, branch_id: "" })}
-        >
-          <option value="BRANCH_MANAGER">Branch Manager</option>
-          <option value="HR_USER">HR User</option>
-        </select>
-        <br />
-        {form.role_code === "BRANCH_MANAGER" && (
-          <>
-            <select
-              value={form.branch_id}
-              onChange={(e) => setForm({ ...form, branch_id: e.target.value })}
+      {isOwner && (
+        <>
+          <h2>Invite Staff</h2>
+          <form onSubmit={handleInvite}>
+            <input
+              type="email"
+              placeholder="Email"
+              value={form.email}
+              onChange={(e) => setForm({ ...form, email: e.target.value })}
               required
+            />
+            <br />
+            <select
+              value={form.role_code}
+              onChange={(e) => setForm({ ...form, role_code: e.target.value, branch_id: "" })}
             >
-              <option value="">Select Branch</option>
-              {branches.map((b) => (
-                <option key={b.id} value={b.id}>{b.branch_name}</option>
-              ))}
+              <option value="BRANCH_MANAGER">Branch Manager</option>
+              <option value="HR_USER">HR User</option>
             </select>
             <br />
-          </>
-        )}
-        <button type="submit">Send Invitation</button>
-      </form>
+            {form.role_code === "BRANCH_MANAGER" && (
+              <>
+                <select
+                  value={form.branch_id}
+                  onChange={(e) => setForm({ ...form, branch_id: e.target.value })}
+                  required
+                >
+                  <option value="">Select Branch</option>
+                  {branches.map((b) => (
+                    <option key={b.id} value={b.id}>{b.branch_name}</option>
+                  ))}
+                </select>
+                <br />
+              </>
+            )}
+            <button type="submit">Send Invitation</button>
+          </form>
+        </>
+      )}
     </div>
   )
 }

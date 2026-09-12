@@ -123,7 +123,97 @@ export const rejectBusiness = (businessId, reason) => {
   return api.post(`/businesses/${businessId}/reject`, { reason })
 }
 
+export const suspendBusiness = (businessId) => {
+  return api.post(`/businesses/${businessId}/suspend`)
+}
+
+export const reactivateBusiness = (businessId) => {
+  return api.post(`/businesses/${businessId}/reactivate`)
+}
+
 export const listCountries = () => api.get("/businesses/countries")
+
+/*
+Business Profile (Business Owner) — M9 Phase 6
+*/
+
+export const getBusinessProfile = (businessId) => api.get(`/businesses/${businessId}`)
+
+export const updateBusinessProfile = (businessId, data) => api.patch(`/businesses/${businessId}`, data)
+
+export const getBusinessAuditHistory = (businessId, params = {}) => {
+  return api.get(`/businesses/${businessId}/audit-logs`, { params })
+}
+
+export const getBusinessAuditLogFilterOptions = (businessId) => {
+  return api.get(`/businesses/${businessId}/audit-logs/filters`)
+}
+
+export const getBusinessNotifications = (businessId, params = {}) => {
+  return api.get(`/businesses/${businessId}/notifications`, { params })
+}
+
+export const getBusinessReports = (businessId) => api.get(`/businesses/${businessId}/reports`)
+
+/*
+Branch Manager / Business Owner Daily Reports — M9 Phase 6
+*/
+
+export const getBranchDailyReport = (branchId, params = {}) => {
+  return api.get(`/branches/${branchId}/reports/daily`, { params })
+}
+
+/*
+Branch Manager Audit History / Notifications — M9 follow-up fix
+*/
+
+export const getBranchAuditHistory = (branchId, params = {}) => {
+  return api.get(`/branches/${branchId}/audit-logs`, { params })
+}
+
+export const getBranchAuditLogFilterOptions = (branchId) => {
+  return api.get(`/branches/${branchId}/audit-logs/filters`)
+}
+
+export const getBranchNotifications = (branchId, params = {}) => {
+  return api.get(`/branches/${branchId}/notifications`, { params })
+}
+
+export const getBranchBookingHistory = (branchId, params = {}) => {
+  return api.get(`/branches/${branchId}/booking-history`, { params })
+}
+
+/*
+Platform Admin: Audit Logs, Notifications, Analytics — M9 Phase 6
+*/
+
+export const getAdminAuditLogs = (params = {}) => api.get("/admin/audit-logs", { params })
+
+export const getAuditLogFilterOptions = () => api.get("/admin/audit-logs/filters")
+
+export const getAdminNotifications = (params = {}) => api.get("/admin/notifications", { params })
+
+export const getPlatformAnalytics = () => api.get("/admin/platform-analytics")
+
+/*
+Resource User self-service — M9 Phase 6
+*/
+
+export const getResourceUserBookings = (scope = "upcoming") => {
+  return api.get("/resource/bookings", { params: { scope } })
+}
+
+/*
+Business Category admin CRUD (Platform Admin)
+*/
+
+export const listBusinessCategoriesAdmin = () => api.get("/businesses/categories/admin")
+
+export const createBusinessCategory = (data) => api.post("/businesses/categories", data)
+
+export const updateBusinessCategory = (categoryId, data) => {
+  return api.patch(`/businesses/categories/${categoryId}`, data)
+}
 
 /*
 Branch helpers (Business Owner)
@@ -404,7 +494,7 @@ export const getCustomerBranchAvailability = (branchId, branchServiceId, date, r
 
 export const createCustomerBooking = (data) => api.post("/customer/bookings", data)
 
-export const listCustomerBookings = () => api.get("/customer/bookings")
+export const listCustomerBookings = (params = {}) => api.get("/customer/bookings", { params })
 
 export const getCustomerBooking = (bookingId) => api.get(`/customer/bookings/${bookingId}`)
 

@@ -1,4 +1,5 @@
 import os
+import smtplib
 import pytest
 
 # Test environment
@@ -27,6 +28,33 @@ class FakeRedis:
 
 # Override real Redis
 rate_limiter.redis_client = FakeRedis()
+
+
+# Fake SMTP for tests — email_service.py always calls smtplib.SMTP(host, port)
+# as a context manager, so tests otherwise attempt a real network connection
+# to the fake SMTP_HOST above and hang until socket timeout on every
+# notification-triggering test. This never touches a network.
+class FakeSMTP:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+    def starttls(self, *args, **kwargs):
+        pass
+
+    def login(self, *args, **kwargs):
+        pass
+
+    def send_message(self, *args, **kwargs):
+        pass
+
+
+smtplib.SMTP = FakeSMTP
 
 
 @pytest.fixture(scope="session", autouse=True)

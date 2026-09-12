@@ -37,7 +37,7 @@ export default function BranchManagement() {
 
   const loadBranches = useCallback(() => {
     listBranchesForBusiness(businessId)
-      .then((response) => setBranches(response.data))
+      .then((response) => setBranches(response.data.items))
       .catch(() => setError("Failed to load branches"))
   }, [businessId])
 

@@ -76,7 +76,7 @@ def _register_business(business_name=None, username=None, email=None):
     payload = {
         "username": username or f"owner_{unique}",
         "email": email or f"{unique}@example.com",
-        "password": "Testpass123",
+        "password": "Testpass123!",
         "business_name": business_name or f"Business {unique}",
         "business_category_id": _category_id(),
         "country_id": _country_id(),
@@ -97,7 +97,7 @@ def _promote_to_platform_admin(username):
         db.close()
 
 
-def _login(username, password="Testpass123"):
+def _login(username, password="Testpass123!"):
     response = client.post(
         "/api/v1/auth/login",
         data={"username": username, "password": password},
@@ -182,7 +182,7 @@ def _create_branch_manager(business_id, owner_token, branch_id, capture):
     username = f"bmuser_{unique}"
     accept = client.post(
         "/api/v1/auth/accept-invitation",
-        json={"token": token, "username": username, "password": "Testpass123"},
+        json={"token": token, "username": username, "password": "Testpass123!"},
     )
     assert accept.status_code == 200, accept.text
     return _login(username)
@@ -201,7 +201,7 @@ def _create_hr_user(business_id, owner_token, capture):
     username = f"hruser_{unique}"
     accept = client.post(
         "/api/v1/auth/accept-invitation",
-        json={"token": token, "username": username, "password": "Testpass123"},
+        json={"token": token, "username": username, "password": "Testpass123!"},
     )
     assert accept.status_code == 200, accept.text
     return _login(username)
@@ -214,7 +214,7 @@ def _register_customer(**overrides):
         "last_name": "Kumar",
         "email": f"cust_{unique}@example.com",
         "mobile_number": "9990001111",
-        "password": "Testpass123",
+        "password": "Testpass123!",
     }
     payload.update(overrides)
     response = client.post("/api/v1/customers/register", json=payload)
@@ -543,7 +543,7 @@ def test_staff_cannot_change_email_after_customer_has_claimed_account():
             "last_name": "Customer",
             "email": email,
             "mobile_number": "9991112222",
-            "password": "Testpass123",
+            "password": "Testpass123!",
         },
     )
     assert reg_response.status_code == 200, reg_response.text
@@ -641,16 +641,49 @@ def test_list_customers_supports_search_and_pagination():
     assert search_response.status_code == 200, search_response.text
     results = search_response.json()
     assert results["total"] == 1
-    assert results["data"][0]["first_name"] == "Searchable"
+    assert results["items"][0]["first_name"] == "Searchable"
 
     paged_response = client.get(
         f"/api/v1/businesses/{business_id}/customers",
-        params={"limit": 1, "offset": 0},
+        params={"page": 1, "page_size": 1},
         headers=_auth(owner_token),
     )
     assert paged_response.status_code == 200, paged_response.text
-    assert len(paged_response.json()["data"]) == 1
+    assert len(paged_response.json()["items"]) == 1
     assert paged_response.json()["total"] >= 2
+    assert paged_response.json()["total_pages"] >= 2
+
+
+def test_list_customers_supports_status_filter():
+    business_id, _, owner_token = _register_and_approve_business()
+
+    active = _create_walk_in(business_id, owner_token, first_name="ActiveOne").json()
+    inactive = _create_walk_in(business_id, owner_token, first_name="InactiveOne").json()
+    client.patch(
+        f"/api/v1/business-customers/{inactive['id']}/status",
+        json={"status": "Inactive"},
+        headers=_auth(owner_token),
+    )
+
+    active_only = client.get(
+        f"/api/v1/businesses/{business_id}/customers",
+        params={"status": "Active"},
+        headers=_auth(owner_token),
+    )
+    assert active_only.status_code == 200, active_only.text
+    ids = [c["id"] for c in active_only.json()["items"]]
+    assert active["id"] in ids
+    assert inactive["id"] not in ids
+
+    inactive_only = client.get(
+        f"/api/v1/businesses/{business_id}/customers",
+        params={"status": "Inactive"},
+        headers=_auth(owner_token),
+    )
+    assert inactive_only.status_code == 200
+    inactive_ids = [c["id"] for c in inactive_only.json()["items"]]
+    assert inactive["id"] in inactive_ids
+    assert active["id"] not in inactive_ids
 
 
 # -----------------------------

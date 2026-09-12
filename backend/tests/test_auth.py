@@ -10,7 +10,7 @@ def test_register_user():
         json={
             "username": "testuser",
             "email": "test@example.com",
-            "password": "Testpass123"
+            "password": "Testpass123!"
         }
     )
 
@@ -29,7 +29,7 @@ def test_login_user():
         json={
             "username": "loginuser",
             "email": "login@example.com",
-            "password": "Testpass123"
+            "password": "Testpass123!"
         }
     )
 
@@ -38,7 +38,7 @@ def test_login_user():
         "/api/v1/auth/login",
         data={
             "username": "loginuser",
-            "password": "Testpass123"
+            "password": "Testpass123!"
         }
     )
 
@@ -66,7 +66,7 @@ def test_access_protected_route_with_token():
         json={
             "username": "protecteduser",
             "email": "protected@example.com",
-            "password": "Testpass123"
+            "password": "Testpass123!"
         }
     )
 
@@ -75,7 +75,7 @@ def test_access_protected_route_with_token():
         "/api/v1/auth/login",
         data={
             "username": "protecteduser",
-            "password": "Testpass123"
+            "password": "Testpass123!"
         }
     )
 
@@ -97,7 +97,7 @@ def test_user_cannot_access_admin_route():
         json={
             "username": "normaluser",
             "email": "normal@example.com",
-            "password": "Testpass123"
+            "password": "Testpass123!"
         }
     )
 
@@ -106,7 +106,7 @@ def test_user_cannot_access_admin_route():
         "/api/v1/auth/login",
         data={
             "username": "normaluser",
-            "password": "Testpass123"
+            "password": "Testpass123!"
         }
     )
 
@@ -128,7 +128,7 @@ def test_admin_can_access_admin_route():
         json={
             "username": "adminuser",
             "email": "admin@example.com",
-            "password": "Testpass123"
+            "password": "Testpass123!"
         }
     )
 
@@ -149,7 +149,7 @@ def test_admin_can_access_admin_route():
         "/api/v1/auth/login",
         data={
             "username": "adminuser",
-            "password": "Testpass123"
+            "password": "Testpass123!"
         }
     )
 
@@ -196,12 +196,12 @@ def test_me_returns_plain_user_context():
         json={
             "username": "plainmeuser",
             "email": "plainme@example.com",
-            "password": "Testpass123"
+            "password": "Testpass123!"
         }
     )
     login_response = client.post(
         "/api/v1/auth/login",
-        data={"username": "plainmeuser", "password": "Testpass123"}
+        data={"username": "plainmeuser", "password": "Testpass123!"}
     )
     access_token = login_response.json()["access_token"]
 
@@ -225,7 +225,7 @@ def test_me_returns_platform_admin_context():
         json={
             "username": "meadmin",
             "email": "meadmin@example.com",
-            "password": "Testpass123"
+            "password": "Testpass123!"
         }
     )
 
@@ -241,7 +241,7 @@ def test_me_returns_platform_admin_context():
 
     login_response = client.post(
         "/api/v1/auth/login",
-        data={"username": "meadmin", "password": "Testpass123"}
+        data={"username": "meadmin", "password": "Testpass123!"}
     )
     access_token = login_response.json()["access_token"]
 
@@ -270,7 +270,7 @@ def test_me_returns_business_owner_context():
         json={
             "username": "meowner",
             "email": "meowner@example.com",
-            "password": "Testpass123",
+            "password": "Testpass123!",
             "business_name": "Me Owner Business",
             "business_category_id": category_id,
             "country_id": country_id,
@@ -279,7 +279,7 @@ def test_me_returns_business_owner_context():
 
     login_response = client.post(
         "/api/v1/auth/login",
-        data={"username": "meowner", "password": "Testpass123"}
+        data={"username": "meowner", "password": "Testpass123!"}
     )
     access_token = login_response.json()["access_token"]
 

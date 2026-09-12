@@ -46,6 +46,33 @@ def _hash_invitation_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def _require_owner_or_hr_membership(db: Session, business_id: int, current_user: User) -> Business:
+    """M9 Phase 6: PRD §10.4 lists 'Employee transfers' as an HR responsibility
+    alongside the Business Owner's own transfer permission (§10.2). Mirrors
+    _require_active_owner_membership but also accepts an Active HR_USER."""
+    business = db.query(Business).filter(Business.id == business_id).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    membership = (
+        db.query(BusinessMember)
+        .join(Role, BusinessMember.role_id == Role.id)
+        .filter(
+            BusinessMember.business_id == business_id,
+            BusinessMember.user_id == current_user.id,
+            BusinessMember.status == "Active",
+            Role.code.in_(["BUSINESS_OWNER", "HR_USER"]),
+        )
+        .first()
+    )
+    if not membership:
+        raise HTTPException(
+            status_code=403,
+            detail="Business Owner or HR privileges required for this business",
+        )
+    return business
+
+
 def _get_role_by_code(db: Session, code: str) -> Role:
     role = db.query(Role).filter(Role.code == code).first()
     if not role:
@@ -268,11 +295,14 @@ def resend_invitation(db: Session, business_id: int, member_id: int, current_use
 
 def list_staff(db: Session, business_id: int, current_user: User) -> List[BusinessMember]:
     """
-    Milestone 3's Staff list — Branch Manager / HR User only (unchanged).
+    Staff list. Readable by the Business Owner and, per M9 Phase 6 (PRD
+    §10.4 'Employee transfers'), also by HR — HR needs this list to use the
+    transfer capability at all. Invitation issuance (ID-006) and
+    deactivation remain Owner-only; only read access is extended here.
     Resource Users are listed separately via
     crud_resource.list_resource_users (ID-016).
     """
-    _require_active_owner_membership(db, business_id, current_user)
+    _require_owner_or_hr_membership(db, business_id, current_user)
     return (
         db.query(BusinessMember)
         .join(Role, BusinessMember.role_id == Role.id)
@@ -294,7 +324,7 @@ def get_staff_member(db: Session, member_id: int, current_user: User) -> Busines
 
 def transfer_branch(db: Session, member_id: int, payload, current_user: User) -> BusinessMember:
     member = _get_member_any_business(db, member_id)
-    business = _require_active_owner_membership(db, member.business_id, current_user)
+    business = _require_owner_or_hr_membership(db, member.business_id, current_user)
 
     role = db.query(Role).filter(Role.id == member.role_id).first()
     if role.code != "BRANCH_MANAGER":

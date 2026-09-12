@@ -38,6 +38,8 @@ def validate_password(password: str):
         raise HTTPException(status_code=400, detail="Password must contain a lowercase letter")
     if not re.search(r"[0-9]", password):
         raise HTTPException(status_code=400, detail="Password must contain a number")
+    if not re.search(r"[^A-Za-z0-9]", password):
+        raise HTTPException(status_code=400, detail="Password must contain a special character")
 
 
 # -----------------------------

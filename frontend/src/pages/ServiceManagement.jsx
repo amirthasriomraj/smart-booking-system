@@ -71,17 +71,20 @@ export default function ServiceManagement() {
     listServiceTemplates(businessId).then((r) => setTemplates(r.data)).catch(() => setError("Failed to load service templates"))
     if (isOwner) {
       listBranchesForBusiness(businessId)
-        .then((r) => setBranches(r.data.filter((b) => b.approval_status === "Approved")))
+        .then((r) => setBranches(r.data.items.filter((b) => b.approval_status === "Approved")))
         .catch(() => {})
     }
   }, [businessId, isOwner])
 
   const loadBranchServices = useCallback(() => {
+    // listBranchServicesForBusiness returns a paginated {items, total, ...}
+    // envelope (M9 Phase 5); listBranchServicesForBranch still returns a
+    // plain array (unpaginated, out of Phase 5 scope) — normalize both here.
     if (isOwner) {
       if (selectedBranchId) {
         listBranchServicesForBranch(selectedBranchId).then((r) => setBranchServices(r.data)).catch(() => setError("Failed to load services"))
       } else {
-        listBranchServicesForBusiness(businessId).then((r) => setBranchServices(r.data)).catch(() => setError("Failed to load services"))
+        listBranchServicesForBusiness(businessId).then((r) => setBranchServices(r.data.items)).catch(() => setError("Failed to load services"))
       }
       return
     }
@@ -432,7 +435,11 @@ export default function ServiceManagement() {
         ))}
       </ul>
 
-      <h2>Pending Approvals</h2>
+      {/* M9 Phase 6: role-appropriate framing of the same ServiceApproval
+          workflow — Business Owner sees a decision queue ("Approvals"),
+          Branch Manager sees their own submissions and status
+          ("Service Requests"). Same backend entity/endpoints either way. */}
+      <h2>{isOwner ? "Pending Approvals" : "Service Requests"}</h2>
       <ul>
         {pendingApprovals.map((a) => (
           <li key={a.id} style={{ marginBottom: "10px" }}>
@@ -460,7 +467,7 @@ export default function ServiceManagement() {
         {pendingApprovals.length === 0 && <li>None.</li>}
       </ul>
 
-      <h2>Approval History</h2>
+      <h2>{isOwner ? "Approval History" : "Service Request History"}</h2>
       <ul>
         {decidedApprovals.map((a) => (
           <li key={a.id} style={{ marginBottom: "10px" }}>

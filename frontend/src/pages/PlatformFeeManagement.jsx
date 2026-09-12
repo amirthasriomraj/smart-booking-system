@@ -37,7 +37,7 @@ export default function PlatformFeeManagement() {
 
   useEffect(() => {
     load()
-    listBusinesses("Active").then((r) => setBusinesses(r.data)).catch(() => {})
+    listBusinesses("Active").then((r) => setBusinesses(r.data.items)).catch(() => {})
   }, [load])
 
   const handleSetDefault = async (e) => {

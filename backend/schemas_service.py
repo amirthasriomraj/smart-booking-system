@@ -77,6 +77,14 @@ class BranchServiceResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PaginatedBranchServices(BaseModel):
+    items: List[BranchServiceResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
 class BranchServiceConfiguration(BaseModel):
     """Shared shape for a direct update and an override proposal — the
     three fields ID-022 established as overridable (Price, Duration,

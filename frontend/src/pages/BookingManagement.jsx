@@ -218,10 +218,10 @@ export default function BookingManagement() {
     }
     if (isOwner) {
       listBranchesForBusiness(businessId)
-        .then((r) => setBranches(r.data.filter((b) => b.approval_status === "Approved" && b.is_active)))
+        .then((r) => setBranches(r.data.items.filter((b) => b.approval_status === "Approved" && b.is_active)))
         .catch(() => {})
     }
-    listBusinessCustomers(businessId, { limit: 100 }).then((r) => setCustomers(r.data.data)).catch(() => {})
+    listBusinessCustomers(businessId, { page_size: 100 }).then((r) => setCustomers(r.data.items)).catch(() => {})
   }, [businessId, isOwner])
 
   useEffect(() => {

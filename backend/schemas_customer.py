@@ -138,10 +138,11 @@ class BusinessCustomerResponse(BaseModel):
 
 
 class PaginatedBusinessCustomers(BaseModel):
+    items: List[BusinessCustomerResponse]
     total: int
-    limit: int
-    offset: int
-    data: List[BusinessCustomerResponse]
+    page: int
+    page_size: int
+    total_pages: int
 
 
 # -------------------------

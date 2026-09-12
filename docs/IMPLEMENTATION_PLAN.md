@@ -198,7 +198,7 @@ Branch booking eligibility respects the approved Branch lifecycle rules recorded
 
 **Status: COMPLETED**
 
-Implementation is complete and test-clean on `feature/payments-financial-policies` (not yet merged into `main`).
+Implementation is already merged into `main`.
 
 Scope approved via the M8 pre-freeze audit and `IMPLEMENTATION_DECISIONS.md` ID-044–ID-056, which promote this functionality from the frozen PRD/TAS's Version 2/deferred scope into V1 (ID-044). The frozen PRD/TAS are not rewritten; ID-044–ID-056 are the authoritative record of what changed and why.
 
@@ -252,19 +252,53 @@ Live, real Razorpay Test Mode verification (not just mocked/unit-tested) was per
 
 (Renumbered from the original Milestone 8 to accommodate Milestone 8 — Payments, Financial Policies & Promotions, inserted ahead of it per the M8 pre-freeze audit decision.)
 
-Complete remaining mandatory V1 cross-cutting functionality, including:
+Complete remaining mandatory V1 cross-cutting functionality. Scope below is organized into phases following a pre-implementation gap analysis against the frozen PRD/TAS and the current Milestone 1–8 implementation; it narrows nothing frozen and adds nothing beyond what the PRD/TAS already require. `IMPLEMENTATION_DECISIONS.md` remains authoritative and is unchanged by this update except where a phase below explicitly notes a decision still to be recorded there.
 
-- Remaining non-financial required email notifications (financial notifications are Milestone 8 scope — see the Milestone 8 / Milestone 9 Notification Boundary above)
-- General notification hardening, reusing the Celery + Redis + Celery Beat infrastructure introduced in Milestone 8 (ID-049) rather than a second mechanism
-- Required soft-delete/status lifecycle corrections
-- Remaining V1 audit coverage
-- Required search/filter/pagination behavior
-- Dashboard foundation required by V1
-- Password-policy correction if still outstanding
-- Cross-role authorization and tenant-isolation verification — must explicitly include the Milestone 8 financial surfaces (payments, holds, coupons, refunds, platform-fee configuration) alongside all prior milestones
-- Full regression testing — must explicitly include Milestone 8 functionality
-- End-to-end V1 workflow verification
-- Final frontend/backend integration verification
+### Milestone 9 Phase 1 — Soft-Delete / Status-Lifecycle Corrections
+
+- Business suspend/reactivate: Platform Admin can transition a Business `Active -> Suspended -> Active`. Booking-blocking for non-Active businesses already exists; this phase adds the crud functions, endpoints, and audit actions (`BUSINESS_SUSPENDED`/`BUSINESS_REACTIVATED`), plus admin frontend UI, mirroring the existing Resource suspend/activate pattern.
+- Business Category admin CRUD: create, update, and activate/deactivate only — no delete/archive (PRD: "The list is configurable by the Platform Administrator"; mirrors the minimal-CRUD precedent already used for Resource Category, ID-015).
+- `User.is_active` admin surface: confirmed already complete and working (existing legacy endpoints, tested, per ID-008). No PRD/TAS requirement exists for a frontend surface — **excluded from M9 scope**.
+
+### Milestone 9 Phase 2 — Audit Coverage Completion
+
+- Add an audit log entry to the password-reset flow (PRD §30 "Password Reset" is a listed auditable event; the reset feature exists today but writes no audit entry).
+- Role/Permission Changes (PRD §30): confirmed **N/A for V1** — no role-reassignment feature exists anywhere in the codebase, and the TAS states V1 deliberately assigns one fixed role per identity. This is a decision, not a build item; to be formally recorded in `IMPLEMENTATION_DECISIONS.md` when M9 decisions are finalized.
+
+### Milestone 9 Phase 3 — Password-Policy Correction
+
+- Add the missing special-character rule to the shared password validator (PRD §33.3's five-part policy — length/upper/lower/number/special-character — is only four-fifths enforced today). One shared fix applies uniformly across registration, password reset, invitation acceptance, and customer registration, since all four paths already funnel through the same validator.
+
+### Milestone 9 Phase 4 — Notifications
+
+- Implement the 6 missing non-financial notification triggers required by PRD §23/§37: Welcome Email (registration), Invitation Accepted, Business Approved, Business Rejected, Branch Approved, Branch Rejected. (Financial notifications remain Milestone 8 scope per the Notification Boundary above; the remaining 7 non-financial triggers — booking confirmation/cancellation/reschedule/completion, service override submitted/approved/rejected — are already implemented.)
+- Extend notification persistence to all non-financial notifications, both the 6 new ones and the 7 already-implemented ones, by routing them through the same Notification/Email Log persistence mechanism Milestone 8 already built and currently uses only for financial events. This closes a gap against PRD §83's general acceptance criterion ("Notification history is recorded for auditing purposes"), which is not scoped to financial events only.
+- General notification hardening continues to reuse the Celery + Redis + Celery Beat infrastructure introduced in Milestone 8 (ID-049) rather than a second mechanism.
+
+### Milestone 9 Phase 5 — Search / Filter / Pagination
+
+- Add search, filter, and pagination to the Resource, Booking, Service, Branch, and Business (Platform Admin) list endpoints per PRD §38–§40 (currently these endpoints accept little to no query parameters).
+- Complete the Customer list endpoint: add the missing Active/Inactive filter, and normalize pagination to the standard `page`/`page_size`/`total`/`total_pages` shape (it currently uses a nonstandard `limit`/`offset`/`total` shape with no `total_pages`).
+
+### Milestone 9 Phase 6 — Dashboard Foundation
+
+- Build the per-role dashboard modules named in PRD §35, using Phase 5's list endpoints for list-based modules and the PRD §36 reporting metrics for Reports/Daily Reports modules. No per-role dashboard shell currently exists; role differentiation today happens only at the navigation-link level.
+- Add a Business Profile view/edit surface (backend update endpoint + frontend page), per PRD §72's explicit acceptance criteria ("Business profile can be viewed" / "can be updated") — this surface does not exist today, distinct from both business registration and the personal user profile page.
+- Extend the existing branch-transfer mechanism's caller authorization to include the HR role (PRD §10.4 lists "Employee transfers" as an HR responsibility), and surface it in HR's UI. Today the mechanism is Business-Owner-only; HR has no access to it at all. The existing Branch-Manager-only transferee restriction (ID-011) is unchanged.
+- Present the existing Service Approval workflow (built in Milestone 5) with role-appropriate frontend framing: "Service Requests" (submission/status view) for Branch Manager, "Approvals" (decision queue) for Business Owner. Same backend entity and endpoints — frontend presentation only, no new backend work.
+- Branch Manager "Working Hours" module: implementation confirmed this was **not** already satisfied as originally classified here — the branch working-hours endpoints (view/update) were backend-restricted to the Business Owner only, with no Branch Manager access at either layer, contradicting PRD §10.3's "Manage branch working hours" responsibility. Fixed as part of Phase 6c: authorization extended to the Business Owner (business-wide, unchanged) or the Branch Manager currently assigned to that branch, with a frontend surface (the "Branch Overview" page) making working hours reachable and editable for the assigned Branch Manager.
+- Confirmed already satisfied and **excluded from new work**: the Customer Dashboard's 6-module granularity (already covered by 3 existing pages; PRD §35 requires the 6 capabilities, not 6 separate routes).
+- Remaining modules still needing scoping/sizing at implementation-planning time: Platform Administrator Analytics, Audit Logs (needs a new backend read endpoint — the write path already exists — plus a frontend view), Configuration, and Notifications; Business Owner Reports and Audit History; Branch Manager Daily Reports and Branch Overview; the entire Resource-role portal (Today's Schedule, Upcoming Bookings, Profile), which currently has no page and no navigation entry point at all.
+
+### Milestone 9 Phase 7 — Cross-Role Authorization & Tenant-Isolation Verification
+
+- Cross-role authorization and tenant-isolation verification — must explicitly include the Milestone 8 financial surfaces (payments, holds, coupons, refunds, platform-fee configuration) alongside all prior milestones, and must also cover every new surface introduced in Phases 1–6 above.
+
+### Milestone 9 Phase 8 — Full Regression & Final Integration
+
+- Full regression testing — must explicitly include Milestone 8 functionality.
+- End-to-end V1 workflow verification.
+- Final frontend/backend integration verification.
 
 Engineering polish explicitly classified as future/non-V1 should not delay V1 completion.
 

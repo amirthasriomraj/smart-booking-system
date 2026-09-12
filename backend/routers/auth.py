@@ -20,8 +20,9 @@ import crud
 import crud_staff
 from auth import create_access_token, generate_csrf_token
 from dependencies import get_current_user, user_has_role
-from models import RefreshToken, BusinessMember, Business, Role, BranchAssignment, Branch, PlatformCustomer, UserProfile
-from services.email_service import send_password_reset_email
+from models import RefreshToken, BusinessMember, Business, Role, BranchAssignment, Branch, PlatformCustomer, UserProfile, User
+from services import notification_service
+from services.email_service import send_password_reset_email, send_invitation_accepted_email
 from services.rate_limiter import rate_limit
 
 from config import get_settings
@@ -320,6 +321,18 @@ def get_invitation_status(token: str, db: Session = Depends(get_db)):
 
 
 @router.post("/accept-invitation")
-def accept_invitation(payload: AcceptInvitationRequest, db: Session = Depends(get_db)):
-    crud_staff.accept_invitation(db, payload)
+def accept_invitation(payload: AcceptInvitationRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    member = crud_staff.accept_invitation(db, payload)
+
+    business = db.query(Business).filter(Business.id == member.business_id).first()
+    owner = db.query(User).filter(User.id == business.owner_user_id).first()
+    new_user = db.query(User).filter(User.id == member.user_id).first()
+    role = db.query(Role).filter(Role.id == member.role_id).first()
+    background_tasks.add_task(
+        notification_service.log_and_send,
+        owner.id, "InvitationAccepted",
+        lambda: send_invitation_accepted_email(owner.email, business.business_name, new_user.username, role.name),
+        business.id, "BusinessMember", member.id,
+    )
+
     return {"detail": "Invitation accepted. You can now log in."}

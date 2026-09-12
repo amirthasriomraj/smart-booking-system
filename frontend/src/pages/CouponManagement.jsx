@@ -67,10 +67,10 @@ export default function CouponManagement() {
     }
     if (isOwner) {
       listBranchesForBusiness(businessId)
-        .then((r) => setBranches(r.data.filter((b) => b.approval_status === "Approved" && b.is_active)))
+        .then((r) => setBranches(r.data.items.filter((b) => b.approval_status === "Approved" && b.is_active)))
         .catch(() => {})
     }
-    listBranchServicesForBusiness(businessId).then((r) => setAllBranchServices(r.data)).catch(() => {})
+    listBranchServicesForBusiness(businessId).then((r) => setAllBranchServices(r.data.items)).catch(() => {})
   }, [businessId, isOwner])
 
   const loadCoupons = useCallback(() => {
