@@ -6,7 +6,7 @@ from typing import List
 class Settings(BaseSettings):
     # App
     APP_NAME: str = "Smart Booking & Notification Backend System"
-    DEBUG: bool = True  # Default for dev
+    DEBUG: bool = False  # Production-safe default; set DEBUG=true in .env for local dev
 
     # Database
     DATABASE_URL: str

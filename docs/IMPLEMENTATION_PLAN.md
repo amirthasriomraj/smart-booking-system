@@ -248,9 +248,16 @@ Live, real Razorpay Test Mode verification (not just mocked/unit-tested) was per
 
 ## Milestone 9 — V1 Notifications, Hardening & Final Integration
 
-**Status: PLANNED**
+**Status: COMPLETED**
 
 (Renumbered from the original Milestone 8 to accommodate Milestone 8 — Payments, Financial Policies & Promotions, inserted ahead of it per the M8 pre-freeze audit decision.)
+
+Implementation is merged into `main`. A post-implementation audit confirmed the four items below — flagged as unconfirmed by an earlier pass of that audit — are implemented and covered by automated tests:
+
+- Password policy special-character rule (Phase 3): enforced in `backend/auth.py::validate_password`, applied uniformly across registration, password reset, invitation acceptance, and customer registration; tested in `backend/tests/test_password_policy.py`.
+- Password-reset audit-log entry (Phase 2): written in `backend/crud.py::reset_password` (`AuditLog.action == "PASSWORD_RESET"`); tested in `backend/tests/test_password_reset.py`.
+- Branch Manager working-hours access (Phase 6c): `backend/crud_branch.py::_require_branch_working_hours_access` grants the assigned Branch Manager access to their own branch's working hours, alongside the Business Owner; tested in `backend/tests/test_branch.py` (including a negative test for a manager of a different branch); surfaced on the frontend `BranchOverview` page.
+- HR branch-transfer authorization (Phase 6): `backend/crud_staff.py::_require_owner_or_hr_membership` grants HR the same branch-transfer capability as the Business Owner; tested in `backend/tests/test_staff.py`; surfaced on the frontend `StaffManagement` page.
 
 Complete remaining mandatory V1 cross-cutting functionality. Scope below is organized into phases following a pre-implementation gap analysis against the frozen PRD/TAS and the current Milestone 1–8 implementation; it narrows nothing frozen and adds nothing beyond what the PRD/TAS already require. `IMPLEMENTATION_DECISIONS.md` remains authoritative and is unchanged by this update except where a phase below explicitly notes a decision still to be recorded there.
 
