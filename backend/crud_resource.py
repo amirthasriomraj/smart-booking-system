@@ -18,6 +18,7 @@ from models import (
     ResourceWorkingHours,
 )
 from audit import write_audit
+from pagination import paginate
 from auth import hash_password
 from crud_branch import get_branch_by_id
 import crud_staff
@@ -303,14 +304,41 @@ def list_resources_for_branch(db: Session, branch_id: int, current_user: User) -
     )
 
 
-def list_resources_for_business(db: Session, business_id: int, current_user: User) -> List[Resource]:
+def list_resources_for_business(
+    db: Session,
+    business_id: int,
+    current_user: User,
+    page: int = 1,
+    page_size: int = 20,
+    search: Optional[str] = None,
+    category_id: Optional[int] = None,
+    status: Optional[str] = None,
+    branch_id: Optional[int] = None,
+) -> dict:
+    """Business-wide Resource search/filter/pagination (PRD §38-40)."""
     _require_business_wide_resource_read_access(db, business_id, current_user)
-    return (
-        db.query(Resource)
-        .filter(Resource.business_id == business_id)
-        .order_by(Resource.created_at.desc())
+
+    query = db.query(Resource).filter(Resource.business_id == business_id)
+
+    if search:
+        like = f"%{search}%"
+        query = query.filter(Resource.resource_name.ilike(like))
+    if category_id is not None:
+        query = query.filter(Resource.resource_category_id == category_id)
+    if status is not None:
+        query = query.filter(Resource.status == status)
+    if branch_id is not None:
+        query = query.filter(Resource.branch_id == branch_id)
+
+    total = query.count()
+    rows = (
+        query.order_by(Resource.created_at.desc())
+        .limit(page_size)
+        .offset((page - 1) * page_size)
         .all()
     )
+
+    return paginate(rows, total, page, page_size)
 
 
 def get_resource(db: Session, resource_id: int, current_user: User) -> Resource:

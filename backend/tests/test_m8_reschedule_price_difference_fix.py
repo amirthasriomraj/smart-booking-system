@@ -66,11 +66,11 @@ def _customer_token_for(setup):
     unique = uuid.uuid4().hex[:8]
     payload = {
         "first_name": "Cust", "last_name": "Omer", "email": f"resched_{unique}@example.com",
-        "mobile_number": "9999999999", "password": "Testpass123",
+        "mobile_number": "9999999999", "password": "Testpass123!",
     }
     response = client.post("/api/v1/customers/register", json=payload)
     assert response.status_code == 200, response.text
-    login = client.post("/api/v1/auth/login", data={"username": payload["email"], "password": "Testpass123"})
+    login = client.post("/api/v1/auth/login", data={"username": payload["email"], "password": "Testpass123!"})
     assert login.status_code == 200, login.text
     return login.json()["access_token"]
 

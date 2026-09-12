@@ -379,6 +379,144 @@ Please complete your payment of Rs. {amount} for "{service_name}" at {business_n
         server.send_message(msg)
 
 
+def send_welcome_email(email: str, name: str):
+    """Notifies a newly-registered account (Business Owner or Customer) of successful registration (PRD §23/§37)."""
+
+    msg = EmailMessage()
+    msg["Subject"] = "Welcome to Smart Booking System"
+    msg["From"] = settings.EMAIL_FROM
+    msg["To"] = email
+
+    msg.set_content(
+        f"""
+Hello {name},
+
+Your account has been created successfully. Welcome to Smart Booking System.
+"""
+    )
+
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        server.starttls()
+        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.send_message(msg)
+
+
+def send_invitation_accepted_email(email: str, business_name: str, member_name: str, role_label: str):
+    """Notifies the Business Owner that an invited team member has accepted and joined (PRD §23/§37)."""
+
+    msg = EmailMessage()
+    msg["Subject"] = f"{member_name} has joined {business_name}"
+    msg["From"] = settings.EMAIL_FROM
+    msg["To"] = email
+
+    msg.set_content(
+        f"""
+Hello,
+
+{member_name} has accepted their invitation and joined {business_name} as a {role_label}.
+"""
+    )
+
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        server.starttls()
+        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.send_message(msg)
+
+
+def send_business_approved_email(email: str, business_name: str):
+    """Notifies the Business Owner their business registration was approved (PRD §23/§37, BR-057)."""
+
+    msg = EmailMessage()
+    msg["Subject"] = f"{business_name} has been approved"
+    msg["From"] = settings.EMAIL_FROM
+    msg["To"] = email
+
+    msg.set_content(
+        f"""
+Hello,
+
+Congratulations — {business_name} has been approved and is now active on Smart Booking System.
+"""
+    )
+
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        server.starttls()
+        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.send_message(msg)
+
+
+def send_business_rejected_email(email: str, business_name: str, reason: str = None):
+    """Notifies the Business Owner their business registration was rejected (PRD §23/§37, BR-057)."""
+
+    msg = EmailMessage()
+    msg["Subject"] = f"{business_name} registration was not approved"
+    msg["From"] = settings.EMAIL_FROM
+    msg["To"] = email
+
+    reason_line = f"\nReason: {reason}\n" if reason else ""
+
+    msg.set_content(
+        f"""
+Hello,
+
+Your registration for {business_name} was not approved.
+{reason_line}
+"""
+    )
+
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        server.starttls()
+        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.send_message(msg)
+
+
+def send_branch_approved_email(email: str, business_name: str, branch_name: str):
+    """Notifies the Business Owner a branch was approved (PRD §23/§37, BR-057)."""
+
+    msg = EmailMessage()
+    msg["Subject"] = f"Branch approved — {branch_name}"
+    msg["From"] = settings.EMAIL_FROM
+    msg["To"] = email
+
+    msg.set_content(
+        f"""
+Hello,
+
+Your branch "{branch_name}" at {business_name} has been approved and is ready to be activated.
+"""
+    )
+
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        server.starttls()
+        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.send_message(msg)
+
+
+def send_branch_rejected_email(email: str, business_name: str, branch_name: str, reason: str = None):
+    """Notifies the Business Owner a branch was rejected (PRD §23/§37, BR-057)."""
+
+    msg = EmailMessage()
+    msg["Subject"] = f"Branch not approved — {branch_name}"
+    msg["From"] = settings.EMAIL_FROM
+    msg["To"] = email
+
+    reason_line = f"\nReason: {reason}\n" if reason else ""
+
+    msg.set_content(
+        f"""
+Hello,
+
+Your branch "{branch_name}" at {business_name} was not approved.
+{reason_line}
+"""
+    )
+
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+        server.starttls()
+        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.send_message(msg)
+
+
 def send_staff_invitation_email(email: str, token: str, role_code: str, business_name: str):
 
     accept_link = f"{settings.FRONTEND_BASE_URL}/accept-invitation?token={token}"

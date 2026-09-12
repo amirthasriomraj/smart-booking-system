@@ -2,7 +2,7 @@ import { useContext } from "react"
 import { Navigate, Outlet } from "react-router-dom"
 import { AuthContext } from "../auth/AuthContextOnly"
 
-export default function ProtectedRoute({ adminOnly=false, businessOwnerOnly=false, customerOnly=false }) {
+export default function ProtectedRoute({ adminOnly=false, businessOwnerOnly=false, customerOnly=false, ownerOrHrOnly=false }) {
 
     const { user, loading } = useContext(AuthContext)
 
@@ -22,6 +22,16 @@ export default function ProtectedRoute({ adminOnly=false, businessOwnerOnly=fals
     if (
         businessOwnerOnly &&
         !(user.business?.role_code === "BUSINESS_OWNER" && user.business?.status === "Active")
+    ) {
+        return <Navigate to="/dashboard" />
+    }
+
+    if (
+        ownerOrHrOnly &&
+        !(
+            ["BUSINESS_OWNER", "HR_USER"].includes(user.business?.role_code) &&
+            user.business?.status === "Active"
+        )
     ) {
         return <Navigate to="/dashboard" />
     }

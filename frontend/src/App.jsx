@@ -7,6 +7,7 @@ import Dashboard from "./pages/Dashboard"
 import Profile from "./pages/Profile"
 import Admin from "./pages/Admin"
 import BranchManagement from "./pages/BranchManagement"
+import BusinessProfile from "./pages/BusinessProfile"
 import StaffManagement from "./pages/StaffManagement"
 import ResourceManagement from "./pages/ResourceManagement"
 import ServiceManagement from "./pages/ServiceManagement"
@@ -21,6 +22,15 @@ import CustomerProfile from "./pages/CustomerProfile"
 import CustomerBrowse from "./pages/CustomerBrowse"
 import CustomerBookings from "./pages/CustomerBookings"
 import CustomerManagement from "./pages/CustomerManagement"
+import AdminAuditLogs from "./pages/AdminAuditLogs"
+import AdminNotifications from "./pages/AdminNotifications"
+import BusinessAuditHistory from "./pages/BusinessAuditHistory"
+import BranchOverview from "./pages/BranchOverview"
+import ResourcePortal from "./pages/ResourcePortal"
+import BookingHistory from "./pages/BookingHistory"
+import BranchAuditHistory from "./pages/BranchAuditHistory"
+import BusinessNotifications from "./pages/BusinessNotifications"
+import BranchNotifications from "./pages/BranchNotifications"
 
 import ProtectedRoute from "./components/ProtectedRoute"
 
@@ -68,6 +78,24 @@ function App() {
               (business-wide) and Branch Manager (own branch, subject to
               approval) — Milestone 8 Coupons & Promotions (rule 10). */}
           <Route path="/business/coupons" element={<CouponManagement />} />
+          {/* M9 Phase 6c: Branch Manager's own assigned branch (backend
+              also allows the Business Owner business-wide); gated generically
+              here since the page itself handles "not assigned to a branch". */}
+          <Route path="/business/branch-overview" element={<BranchOverview />} />
+          {/* M9 Phase 6c: Resource User self-service (PRD §35 Resource
+              Dashboard) — any authenticated user, the backend rejects
+              anyone with no linked Resource. */}
+          <Route path="/resource/schedule" element={<ResourcePortal />} />
+          {/* M9 follow-up fix: Booking History — Business Owner (business-
+              wide, with a Branch filter) or Branch Manager (their own
+              branch only); the page itself picks the right endpoint per
+              role and the backend enforces the scoping either way. */}
+          <Route path="/business/booking-history" element={<BookingHistory />} />
+          {/* M9 follow-up fix: Branch Manager's own Audit History /
+              Notifications — gated generically, same pattern as Branch
+              Overview above; backend enforces the branch scoping. */}
+          <Route path="/business/branch-audit-history" element={<BranchAuditHistory />} />
+          <Route path="/business/branch-notifications" element={<BranchNotifications />} />
         </Route>
 
         {/* Customer Portal — protected routes (Milestone 6, extended in Milestone 7) */}
@@ -82,11 +110,23 @@ function App() {
           <Route path="/admin" element={<Admin />} />
           {/* Milestone 8: Platform Admin fee authority (ID-051, rule 17-19). */}
           <Route path="/admin/platform-fee" element={<PlatformFeeManagement />} />
+          {/* M9 Phase 6c: Platform Administrator Dashboard modules. */}
+          <Route path="/admin/audit-logs" element={<AdminAuditLogs />} />
+          <Route path="/admin/notifications" element={<AdminNotifications />} />
         </Route>
 
         {/* Business Owner routes */}
         <Route element={<ProtectedRoute businessOwnerOnly={true} />}>
           <Route path="/business/branches" element={<BranchManagement />} />
+          <Route path="/business/profile" element={<BusinessProfile />} />
+          {/* M9 Phase 6c: Business Owner Dashboard — Audit History module. */}
+          <Route path="/business/audit-history" element={<BusinessAuditHistory />} />
+          {/* M9 follow-up fix: Business Owner Notifications. */}
+          <Route path="/business/notifications" element={<BusinessNotifications />} />
+        </Route>
+
+        {/* Business Owner or HR — M9 Phase 6, PRD §10.4 Employee transfers */}
+        <Route element={<ProtectedRoute ownerOrHrOnly={true} />}>
           <Route path="/business/staff" element={<StaffManagement />} />
         </Route>
 

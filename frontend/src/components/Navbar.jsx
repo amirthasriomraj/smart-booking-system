@@ -11,6 +11,9 @@ export default function Navbar() {
 
   const isPlatformAdmin = user?.is_platform_admin
   const isActiveBusinessOwner = user?.business?.role_code === "BUSINESS_OWNER" && user?.business?.status === "Active"
+  const canManageStaff =
+    user?.business?.status === "Active" &&
+    ["BUSINESS_OWNER", "HR_USER"].includes(user?.business?.role_code)
   const canManageResources =
     user?.business?.status === "Active" &&
     ["BUSINESS_OWNER", "BRANCH_MANAGER", "HR_USER"].includes(user?.business?.role_code)
@@ -26,6 +29,8 @@ export default function Navbar() {
   const canManageCoupons =
     user?.business?.status === "Active" &&
     ["BUSINESS_OWNER", "BRANCH_MANAGER"].includes(user?.business?.role_code)
+  const isBranchManager = user?.business?.role_code === "BRANCH_MANAGER" && user?.business?.status === "Active"
+  const isResourceUser = user?.business?.role_code === "RESOURCE_USER"
   const isCustomer = !!user?.customer
 
   const handleLogout = async () => {
@@ -64,13 +69,50 @@ export default function Navbar() {
           <Link to="/admin">Admin</Link>
           {" | "}
           <Link to="/admin/platform-fee">Platform Fee</Link>
+          {" | "}
+          <Link to="/admin/audit-logs">Audit Logs</Link>
+          {" | "}
+          <Link to="/admin/notifications">Notifications</Link>
         </>
       )}
 
       {isActiveBusinessOwner && (
         <>
           {" | "}
+          <Link to="/business/profile">Business Profile</Link>
+          {" | "}
           <Link to="/business/branches">My Branches</Link>
+          {" | "}
+          <Link to="/business/booking-history">Booking History</Link>
+          {" | "}
+          <Link to="/business/audit-history">Audit History</Link>
+          {" | "}
+          <Link to="/business/notifications">Notifications</Link>
+        </>
+      )}
+
+      {isBranchManager && (
+        <>
+          {" | "}
+          <Link to="/business/branch-overview">Branch Overview</Link>
+          {" | "}
+          <Link to="/business/booking-history">Booking History</Link>
+          {" | "}
+          <Link to="/business/branch-audit-history">Audit History</Link>
+          {" | "}
+          <Link to="/business/branch-notifications">Notifications</Link>
+        </>
+      )}
+
+      {isResourceUser && (
+        <>
+          {" | "}
+          <Link to="/resource/schedule">My Schedule</Link>
+        </>
+      )}
+
+      {canManageStaff && (
+        <>
           {" | "}
           <Link to="/business/staff">Staff</Link>
         </>

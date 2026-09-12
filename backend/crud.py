@@ -6,6 +6,7 @@ from fastapi import HTTPException
 
 from models import User, Booking, UserProfile, RefreshToken, PlatformCustomer, BusinessCustomer
 from auth import hash_password, verify_password, validate_password, generate_refresh_token, hash_refresh_token
+from audit import write_audit
 
 import secrets
 import hashlib
@@ -217,6 +218,16 @@ def reset_password(db: Session, token: str, new_password: str):
     # Invalidate token
     user.reset_token_hash = None
     user.reset_token_expiry = None
+
+    write_audit(
+        db,
+        business_id=None,
+        entity_type="User",
+        entity_id=user.id,
+        action="PASSWORD_RESET",
+        performed_by=user.id,
+        commit=False,
+    )
 
     db.commit()
 

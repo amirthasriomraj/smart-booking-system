@@ -1,12 +1,13 @@
-from fastapi import APIRouter, Depends, BackgroundTasks
+from fastapi import APIRouter, Depends, BackgroundTasks, Query
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 
 from database import SessionLocal
 from schemas_service import (
     ServiceTemplateCreateRequest,
     ServiceTemplateResponse,
     BranchServiceResponse,
+    PaginatedBranchServices,
     BranchServiceUpdateRequest,
     BranchServiceOverrideRequest,
     ServiceApprovalDecisionRequest,
@@ -14,6 +15,7 @@ from schemas_service import (
 )
 import crud_service
 from dependencies import get_current_user
+from services import notification_service
 from services.email_service import (
     send_service_override_submitted_email,
     send_service_override_decision_email,
@@ -99,14 +101,18 @@ def list_branch_services_for_branch(
     return [crud_service.serialize_branch_service(db, bs) for bs in branch_services]
 
 
-@router.get("/businesses/{business_id}/branch-services", response_model=List[BranchServiceResponse])
+@router.get("/businesses/{business_id}/branch-services", response_model=PaginatedBranchServices)
 def list_branch_services_for_business(
     business_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    search: Optional[str] = None,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    branch_services = crud_service.list_branch_services_for_business(db, business_id, current_user)
-    return [crud_service.serialize_branch_service(db, bs) for bs in branch_services]
+    result = crud_service.list_branch_services_for_business(db, business_id, current_user, page, page_size, search)
+    result["items"] = [crud_service.serialize_branch_service(db, bs) for bs in result["items"]]
+    return result
 
 
 @router.get("/branch-services/{branch_service_id}", response_model=BranchServiceResponse)
@@ -142,11 +148,14 @@ def submit_branch_service_override(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    approval, owner_email, business_name, branch_name, service_name = crud_service.submit_branch_service_override(
+    approval, owner_user, business_name, branch_name, service_name, business_id = crud_service.submit_branch_service_override(
         db, branch_service_id, payload, current_user
     )
     background_tasks.add_task(
-        send_service_override_submitted_email, owner_email, business_name, branch_name, service_name
+        notification_service.log_and_send,
+        owner_user.id, "ServiceOverrideSubmitted",
+        lambda: send_service_override_submitted_email(owner_user.email, business_name, branch_name, service_name),
+        business_id, "ServiceApproval", approval.id,
     )
     return crud_service.serialize_service_approval(db, approval)
 
@@ -159,12 +168,16 @@ def decide_service_approval(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    approval, submitter_email, business_name, branch_name, service_name = crud_service.decide_service_approval(
+    approval, submitter, business_name, branch_name, service_name, business_id = crud_service.decide_service_approval(
         db, approval_id, payload, current_user
     )
     background_tasks.add_task(
-        send_service_override_decision_email,
-        submitter_email, business_name, branch_name, service_name, approval.decision, approval.comments,
+        notification_service.log_and_send,
+        submitter.id, f"ServiceOverride{approval.decision}",
+        lambda: send_service_override_decision_email(
+            submitter.email, business_name, branch_name, service_name, approval.decision, approval.comments,
+        ),
+        business_id, "ServiceApproval", approval.id,
     )
     return crud_service.serialize_service_approval(db, approval)
 

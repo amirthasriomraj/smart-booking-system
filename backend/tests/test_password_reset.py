@@ -1,11 +1,13 @@
 from fastapi.testclient import TestClient
 from main import app
+from database import SessionLocal
+from models import AuditLog, User
 import uuid
 
 client = TestClient(app)
 
 
-def create_test_user(password="Oldpass123"):
+def create_test_user(password="Oldpass123!"):
     unique = uuid.uuid4().hex[:8]
 
     username = f"user_{unique}"
@@ -59,7 +61,7 @@ def test_password_reset_flow(monkeypatch):
         "/api/v1/auth/reset-password",
         json={
             "token": raw_reset_token,
-            "new_password": "Newpass123"
+            "new_password": "Newpass123!"
         }
     )
 
@@ -70,7 +72,7 @@ def test_password_reset_flow(monkeypatch):
         "/api/v1/auth/login",
         data={
             "username": username,
-            "password": "Oldpass123"
+            "password": "Oldpass123!"
         }
     )
 
@@ -81,9 +83,23 @@ def test_password_reset_flow(monkeypatch):
         "/api/v1/auth/login",
         data={
             "username": username,
-            "password": "Newpass123"
+            "password": "Newpass123!"
         }
     )
 
     assert new_login.status_code == 200
     assert "access_token" in new_login.json()
+
+    # M9 Phase 2: password reset writes an audit entry (PRD §30)
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.username == username).first()
+        audit_entry = db.query(AuditLog).filter(
+            AuditLog.entity_type == "User",
+            AuditLog.entity_id == user.id,
+            AuditLog.action == "PASSWORD_RESET",
+        ).first()
+        assert audit_entry is not None
+        assert audit_entry.performed_by == user.id
+    finally:
+        db.close()

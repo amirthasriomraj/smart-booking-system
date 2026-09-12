@@ -53,7 +53,7 @@ export default function CustomerManagement() {
     }
     listBusinessCustomers(businessId, { search: search || undefined })
       .then((response) => {
-        setCustomers(response.data.data)
+        setCustomers(response.data.items)
         setTotal(response.data.total)
       })
       .catch(() => setError("Failed to load customers"))

@@ -752,3 +752,45 @@ Customer self-cancellation and self-reschedule are explicitly unaffected — no 
 
 **Reason:**
 Resolved per explicit user decision during manual acceptance testing of M8: staff cancellations/reschedules were being recorded with no explanation in the ordinary case, which is insufficient for accountability/audit review of financial actions (refund calculations, revenue-affecting reschedules) taken on a customer's behalf.
+
+---
+
+## ID-058 — "Role Changes" Audit Event (PRD §30) Is N/A for V1
+
+**Decision:**
+PRD §30's Auditable Events list names "Role Changes" as a mandatory auditable event. No feature exists anywhere in the codebase that reassigns a role on an existing identity: `BusinessMember.role_id` and `UserRole.role_id` are both write-once at creation (staff invitation, Resource User invitation, business registration, customer registration, Platform Admin bootstrap) and no endpoint updates either column afterward. This is confirmed deliberate, not an oversight: the TAS's User Roles design states "Although Version 1 typically assigns one primary role, this design avoids future schema changes" — the schema supports future multi-role/reassignment extensibility, but V1 itself assigns exactly one fixed role per identity-scope with no reassignment mechanism.
+
+"Role Changes" is therefore treated as **N/A for V1**: there is no role-reassignment workflow to audit, and none is required to be built for this milestone. Branch Manager transfer (`crud_staff.transfer_branch`) reassigns a *branch*, not a *role*, and is unrelated to this gap.
+
+**Reason:**
+Resolved during Milestone 9 Phase 2 planning. The frozen PRD lists this event without ever defining what triggers it, and the frozen TAS independently confirms V1 deliberately excludes role reassignment. Recording this explicitly follows the platform's established practice (e.g. ID-015, ID-022) of documenting a frozen-document gap as a reasoned exclusion rather than leaving it silently unaddressed.
+
+---
+
+## ID-059 — Business Owner Audit History Included, Business-Scoped Read-Only
+
+**Decision:**
+PRD §35's Business Owner Dashboard module list names "Audit History" as a module. TAS §6's parallel Business Owner Dashboard module list omits it, and PRD §10.1/§26.1 assign general audit-log *access* specifically to the Platform Administrator, with no equivalent grant named for the Business Owner elsewhere. Resolved in favor of PRD §35's explicit listing (the more specific, later source), consistent with how the project resolves this class of PRD/TAS conflict elsewhere (ID-028, ID-035). Business Owner Audit History is implemented as read-only, strictly scoped to `AuditLog` rows for that Business Owner's own business only — no cross-business visibility, no write/update/delete surface, distinct from and independent of the Platform Administrator's existing platform-wide audit access.
+
+**Reason:**
+Resolved during Milestone 9 Phase 6c per explicit user decision, closing a flagged PRD §35/TAS §6 conflict rather than silently building or silently omitting the module.
+
+---
+
+## ID-060 — M9 Phase 5 Search/Pagination Scope Limited to Six Canonical Business-Wide List Endpoints
+
+**Decision:**
+Milestone 9 Phase 5's search/filter/sort/pagination work applies to exactly one canonical, business-wide list endpoint per named PRD §38 entity — Customers, Resources, Bookings, Services (Branch Services), Branches, and Businesses (Platform Admin) — not to every branch-scoped variant of these endpoints (e.g. `GET /branches/{id}/resources`, `GET /branches/{id}/bookings`, `GET /branches/{id}/branch-services` are unaffected and remain simple, unpaginated lists). The response envelope for all six is the TAS pagination standard (`items`, `total`, `page`, `page_size`, `total_pages`), including normalizing the pre-existing Customer endpoint's ad-hoc `limit`/`offset`/`data` shape to match.
+
+**Reason:**
+Resolved during Milestone 9 Phase 5 per explicit user decision. The M9 plan named "the Resource, Booking, Service, Branch, and Business list endpoints" singular per entity; widening to every branch-scoped duplicate would have materially increased the consumer-fix surface (frontend pages and tests already treating those responses as bare arrays) for no PRD-cited requirement naming the branch-scoped variants specifically.
+
+---
+
+## ID-061 — Welcome Email Limited to PRD-Described Registration Flows, Legacy `/auth/register` Excluded
+
+**Decision:**
+The Milestone 9 "Welcome Email" notification trigger (PRD §23/§37) is wired into the two registration flows the frozen PRD actually describes: Business Owner registration (`POST /businesses/register`) and Customer self-registration (`POST /customers/register`, PRD §17.5). It is deliberately **not** added to the legacy `POST /auth/register` endpoint.
+
+**Reason:**
+Resolved during Milestone 9 Phase 4 planning. Per ID-034, `/auth/register` is a pre-tenant-model, pre-refactor endpoint retained only because existing regression tests exercise it directly; it produces a bare, non-tenant-aware `User` row unrelated to any PRD-described signup workflow. Adding a Welcome Email there would extend M9 notification scope to a legacy code path the PRD never describes as a registration flow, rather than to the two real ones it does.

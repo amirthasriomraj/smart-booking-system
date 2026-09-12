@@ -31,9 +31,20 @@ import Navbar from "../components/Navbar"
 // currently-assigned resource if it's still free, and otherwise falls back
 // to automatic "First Available" reassignment on its own; customers have no
 // manual resource picker (that stays a staff-only action, §21).
+const HISTORY_PAGE_SIZE = 20
+
 export default function CustomerBookings() {
   const { user } = useContext(AuthContext)
   const [bookings, setBookings] = useState([])
+
+  // Appointment History (M9 follow-up fix): date-range filter + pagination,
+  // fetched separately from the small unpaginated Upcoming list above.
+  const [historyItems, setHistoryItems] = useState([])
+  const [historyTotal, setHistoryTotal] = useState(0)
+  const [historyTotalPages, setHistoryTotalPages] = useState(1)
+  const [historyPage, setHistoryPage] = useState(1)
+  const [historyDateFrom, setHistoryDateFrom] = useState("")
+  const [historyDateTo, setHistoryDateTo] = useState("")
 
   const [rescheduleId, setRescheduleId] = useState(null)
   const [rescheduleDate, setRescheduleDate] = useState("")
@@ -49,18 +60,41 @@ export default function CustomerBookings() {
   const [message, setMessage] = useState("")
 
   const load = useCallback(() => {
-    listCustomerBookings()
-      .then((response) => setBookings(response.data))
+    listCustomerBookings({ page_size: 100 })
+      .then((response) => setBookings(response.data.items))
       .catch(() => setError("Failed to load your bookings"))
   }, [])
+
+  const loadHistory = useCallback(() => {
+    listCustomerBookings({
+      date_from: historyDateFrom || undefined,
+      date_to: historyDateTo || undefined,
+      page: historyPage,
+      page_size: HISTORY_PAGE_SIZE,
+    })
+      .then((response) => {
+        setHistoryItems(response.data.items)
+        setHistoryTotal(response.data.total)
+        setHistoryTotalPages(response.data.total_pages)
+      })
+      .catch(() => setError("Failed to load appointment history"))
+  }, [historyDateFrom, historyDateTo, historyPage])
 
   useEffect(() => {
     load()
   }, [load])
 
+  useEffect(() => {
+    loadHistory()
+  }, [loadHistory])
+
+  const handleHistoryFilterChange = (setter) => (value) => {
+    setter(value)
+    setHistoryPage(1)
+  }
+
   const today = new Date().toISOString().slice(0, 10)
   const upcoming = bookings.filter((b) => b.status === "Confirmed" && b.booking_date >= today)
-  const history_ = bookings.filter((b) => b.status !== "Confirmed" || b.booking_date < today)
 
   const startReschedule = (booking) => {
     setError("")
@@ -133,6 +167,7 @@ export default function CustomerBookings() {
 
       cancelReschedule()
       load()
+      loadHistory()
     } catch (err) {
       if (err?.response) {
         setError(extractErrorMessage(err, "Failed to reschedule booking"))
@@ -157,6 +192,7 @@ export default function CustomerBookings() {
         setMessage("Booking cancelled.")
       }
       load()
+      loadHistory()
     } catch (err) {
       setError(extractErrorMessage(err, "Failed to cancel booking"))
     }
@@ -181,6 +217,7 @@ export default function CustomerBookings() {
       })
       setMessage("Balance paid.")
       load()
+      loadHistory()
     } catch (err) {
       if (err?.response) {
         setError(extractErrorMessage(err, "Failed to pay balance"))
@@ -331,10 +368,25 @@ export default function CustomerBookings() {
       </ul>
 
       <h2>Appointment History</h2>
+      <label>
+        From: <input type="date" value={historyDateFrom} onChange={(e) => handleHistoryFilterChange(setHistoryDateFrom)(e.target.value)} />
+      </label>
+      {" "}
+      <label>
+        To: <input type="date" value={historyDateTo} onChange={(e) => handleHistoryFilterChange(setHistoryDateTo)(e.target.value)} />
+      </label>
+      <p>{historyTotal} total — page {historyPage} of {historyTotalPages || 1}.</p>
       <ul>
-        {history_.map(renderBooking)}
-        {history_.length === 0 && <li>No past appointments.</li>}
+        {historyItems.map(renderBooking)}
+        {historyItems.length === 0 && <li>No past appointments.</li>}
       </ul>
+      <button onClick={() => setHistoryPage((p) => Math.max(1, p - 1))} disabled={historyPage <= 1}>
+        Previous
+      </button>
+      {" "}
+      <button onClick={() => setHistoryPage((p) => p + 1)} disabled={historyPage >= historyTotalPages}>
+        Next
+      </button>
     </div>
   )
 }

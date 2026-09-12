@@ -84,7 +84,7 @@ def _register_business(business_name=None, username=None, email=None):
     payload = {
         "username": username or f"owner_{unique}",
         "email": email or f"{unique}@example.com",
-        "password": "Testpass123",
+        "password": "Testpass123!",
         "business_name": business_name or f"Business {unique}",
         "business_category_id": _category_id(),
         "country_id": _country_id(),
@@ -105,7 +105,7 @@ def _promote_to_platform_admin(username):
         db.close()
 
 
-def _login(username, password="Testpass123"):
+def _login(username, password="Testpass123!"):
     response = client.post("/api/v1/auth/login", data={"username": username, "password": password})
     assert response.status_code == 200, response.text
     return response.json()["access_token"]
@@ -182,7 +182,7 @@ def _invite_and_accept_staff(business_id, owner_token, role_code, branch_id=None
     username = f"user_{unique}"
     accept = client.post(
         "/api/v1/auth/accept-invitation",
-        json={"token": captured["token"], "username": username, "password": "Testpass123"},
+        json={"token": captured["token"], "username": username, "password": "Testpass123!"},
     )
     assert accept.status_code == 200, accept.text
     return username, _login(username)
@@ -258,7 +258,7 @@ def _register_customer(**overrides):
         "last_name": "Kumar",
         "email": f"cust_{unique}@example.com",
         "mobile_number": "9990001111",
-        "password": "Testpass123",
+        "password": "Testpass123!",
     }
     payload.update(overrides)
     response = client.post("/api/v1/customers/register", json=payload)
@@ -433,8 +433,8 @@ def test_customer_self_booking_auto_provisions_business_customer():
     # Reusing the same business the second time reuses the same BusinessCustomer.
     listing = client.get("/api/v1/customer/bookings", headers=_auth(customer_token))
     assert listing.status_code == 200
-    assert len(listing.json()) == 1
-    assert listing.json()[0]["customer_id"] == booking["customer_id"]
+    assert len(listing.json()["items"]) == 1
+    assert listing.json()["items"][0]["customer_id"] == booking["customer_id"]
 
 
 def test_manual_resource_selection_rejects_ineligible_category():
@@ -924,7 +924,8 @@ def test_business_owner_can_list_business_wide_bookings():
     )
     listing = client.get(f"/api/v1/businesses/{setup['business_id']}/bookings", headers=_auth(setup["owner_token"]))
     assert listing.status_code == 200, listing.text
-    assert len(listing.json()) == 1
+    assert len(listing.json()["items"]) == 1
+    assert listing.json()["total"] == 1
 
 
 # -----------------------------

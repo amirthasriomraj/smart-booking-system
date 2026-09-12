@@ -69,7 +69,7 @@ def _register_business(business_name=None, username=None, email=None):
     payload = {
         "username": username or f"owner_{unique}",
         "email": email or f"{unique}@example.com",
-        "password": "Testpass123",
+        "password": "Testpass123!",
         "business_name": business_name or f"Business {unique}",
         "business_category_id": _category_id(),
         "country_id": _country_id(),
@@ -91,7 +91,7 @@ def _promote_to_platform_admin(username):
         db.close()
 
 
-def _login(username, password="Testpass123"):
+def _login(username, password="Testpass123!"):
     response = client.post(
         "/api/v1/auth/login",
         data={"username": username, "password": password},
@@ -213,7 +213,7 @@ def test_business_owner_sees_all_branches_regardless_of_status():
         headers=_auth(owner_token),
     )
     assert response.status_code == 200
-    ids = [b["id"] for b in response.json()]
+    ids = [b["id"] for b in response.json()["items"]]
     assert branch["id"] in ids
 
 
@@ -480,3 +480,102 @@ def test_business_owner_can_set_and_retrieve_working_hours():
         assert len(stored) == 2
     finally:
         db.close()
+
+
+def _invite_and_accept_branch_manager(business_id, owner_token, branch_id):
+    import routers.staff as staff_router
+
+    unique = uuid.uuid4().hex[:8]
+    captured = {}
+
+    def fake_send(email, token, role_code, business_name):
+        captured["token"] = token
+
+    original = staff_router.send_staff_invitation_email
+    staff_router.send_staff_invitation_email = fake_send
+    try:
+        invite = client.post(
+            f"/api/v1/businesses/{business_id}/staff/invite",
+            json={"email": f"bmhours_{unique}@example.com", "role_code": "BRANCH_MANAGER", "branch_id": branch_id},
+            headers=_auth(owner_token),
+        )
+        assert invite.status_code == 200, invite.text
+    finally:
+        staff_router.send_staff_invitation_email = original
+
+    accept = client.post(
+        "/api/v1/auth/accept-invitation",
+        json={"token": captured["token"], "username": f"bmhoursuser_{unique}", "password": "Testpass123!"},
+    )
+    assert accept.status_code == 200, accept.text
+    return _login(f"bmhoursuser_{unique}")
+
+
+def test_assigned_branch_manager_can_view_and_update_working_hours():
+    """M9 Phase 6c: PRD §10.3 'Manage branch working hours' is a Branch
+    Manager responsibility, not just the Business Owner's."""
+    business_id, _, owner_token = _register_and_approve_business()
+    branch = _create_branch(business_id, owner_token)
+    _approve_branch(branch["id"])
+    activate = client.post(f"/api/v1/branches/{branch['id']}/activate", headers=_auth(owner_token))
+    assert activate.status_code == 200
+
+    bm_token = _invite_and_accept_branch_manager(business_id, owner_token, branch["id"])
+
+    get_response = client.get(f"/api/v1/branches/{branch['id']}/working-hours", headers=_auth(bm_token))
+    assert get_response.status_code == 200, get_response.text
+
+    put_response = client.put(
+        f"/api/v1/branches/{branch['id']}/working-hours",
+        json={"hours": [{"weekday": 1, "opening_time": "10:00:00", "closing_time": "18:00:00", "is_closed": False}]},
+        headers=_auth(bm_token),
+    )
+    assert put_response.status_code == 200, put_response.text
+
+
+def test_assigned_branch_manager_can_view_own_branch_detail():
+    """Manual-testing follow-up fix: GET /branches/{id} (used by the
+    Branch Overview page) was still Owner/Platform-Admin-only even after
+    working-hours access was extended to the assigned Branch Manager."""
+    business_id, _, owner_token = _register_and_approve_business()
+    branch = _create_branch(business_id, owner_token)
+    _approve_branch(branch["id"])
+    client.post(f"/api/v1/branches/{branch['id']}/activate", headers=_auth(owner_token))
+
+    bm_token = _invite_and_accept_branch_manager(business_id, owner_token, branch["id"])
+
+    response = client.get(f"/api/v1/branches/{branch['id']}", headers=_auth(bm_token))
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == branch["id"]
+
+
+def test_branch_manager_of_another_branch_cannot_view_branch_detail():
+    business_id, _, owner_token = _register_and_approve_business()
+    branch_1 = _create_branch(business_id, owner_token, "Branch One")
+    _approve_branch(branch_1["id"])
+    client.post(f"/api/v1/branches/{branch_1['id']}/activate", headers=_auth(owner_token))
+
+    branch_2 = _create_branch(business_id, owner_token, "Branch Two")
+    _approve_branch(branch_2["id"])
+    client.post(f"/api/v1/branches/{branch_2['id']}/activate", headers=_auth(owner_token))
+
+    bm_token = _invite_and_accept_branch_manager(business_id, owner_token, branch_1["id"])
+
+    response = client.get(f"/api/v1/branches/{branch_2['id']}", headers=_auth(bm_token))
+    assert response.status_code == 403
+
+
+def test_branch_manager_of_another_branch_cannot_access_working_hours():
+    business_id, _, owner_token = _register_and_approve_business()
+    branch_1 = _create_branch(business_id, owner_token, "Branch One")
+    _approve_branch(branch_1["id"])
+    client.post(f"/api/v1/branches/{branch_1['id']}/activate", headers=_auth(owner_token))
+
+    branch_2 = _create_branch(business_id, owner_token, "Branch Two")
+    _approve_branch(branch_2["id"])
+    client.post(f"/api/v1/branches/{branch_2['id']}/activate", headers=_auth(owner_token))
+
+    bm_token = _invite_and_accept_branch_manager(business_id, owner_token, branch_1["id"])
+
+    response = client.get(f"/api/v1/branches/{branch_2['id']}/working-hours", headers=_auth(bm_token))
+    assert response.status_code == 403

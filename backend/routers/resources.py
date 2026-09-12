@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, BackgroundTasks
+from fastapi import APIRouter, Depends, BackgroundTasks, Query
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 
 from database import SessionLocal
 from schemas_resource import (
@@ -10,6 +10,7 @@ from schemas_resource import (
     ResourceCreateRequest,
     ResourceUpdateRequest,
     ResourceResponse,
+    PaginatedResources,
     ResourceWorkingHoursUpsertRequest,
     ResourceWorkingHourResponse,
     ResourceUserInviteRequest,
@@ -86,13 +87,21 @@ def list_resources_for_branch(
     return crud_resource.list_resources_for_branch(db, branch_id, current_user)
 
 
-@router.get("/businesses/{business_id}/resources", response_model=List[ResourceResponse])
+@router.get("/businesses/{business_id}/resources", response_model=PaginatedResources)
 def list_resources_for_business(
     business_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    search: Optional[str] = None,
+    category_id: Optional[int] = None,
+    status: Optional[str] = None,
+    branch_id: Optional[int] = None,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return crud_resource.list_resources_for_business(db, business_id, current_user)
+    return crud_resource.list_resources_for_business(
+        db, business_id, current_user, page, page_size, search, category_id, status, branch_id
+    )
 
 
 @router.get("/resources/{resource_id}", response_model=ResourceResponse)

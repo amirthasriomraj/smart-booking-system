@@ -76,7 +76,7 @@ def _register_business(business_name=None, username=None, email=None):
     payload = {
         "username": username or f"owner_{unique}",
         "email": email or f"{unique}@example.com",
-        "password": "Testpass123",
+        "password": "Testpass123!",
         "business_name": business_name or f"Business {unique}",
         "business_category_id": _category_id(),
         "country_id": _country_id(),
@@ -98,7 +98,7 @@ def _promote_to_platform_admin(username):
         db.close()
 
 
-def _login(username, password="Testpass123"):
+def _login(username, password="Testpass123!"):
     response = client.post(
         "/api/v1/auth/login",
         data={"username": username, "password": password},
@@ -181,7 +181,7 @@ def capture_invitation_email(monkeypatch):
     return captured
 
 
-def _register_plain_user(username=None, email=None, password="Testpass123"):
+def _register_plain_user(username=None, email=None, password="Testpass123!"):
     unique = uuid.uuid4().hex[:8]
     payload = {
         "username": username or f"user_{unique}",
@@ -315,7 +315,7 @@ def test_accept_invitation_case_a_activates_user_and_creates_branch_assignment(c
 
     accept_response = client.post(
         "/api/v1/auth/accept-invitation",
-        json={"token": token, "username": f"bmuser_{unique}", "password": "Testpass123"},
+        json={"token": token, "username": f"bmuser_{unique}", "password": "Testpass123!"},
     )
     assert accept_response.status_code == 200, accept_response.text
 
@@ -384,7 +384,7 @@ def test_invite_existing_user_case_b_reuses_user_without_modifying_credentials(c
     unique = uuid.uuid4().hex[:8]
     existing_email = f"existing_{unique}@example.com"
     existing_username = f"existinguser_{unique}"
-    _register_plain_user(username=existing_username, email=existing_email, password="OriginalPass1")
+    _register_plain_user(username=existing_username, email=existing_email, password="OriginalPass1!")
 
     invite_response = _invite(business_id, owner_token, existing_email, "HR_USER")
     assert invite_response.status_code == 200, invite_response.text
@@ -411,7 +411,7 @@ def test_invite_existing_user_case_b_reuses_user_without_modifying_credentials(c
     # Supplying credentials for a case-B token is rejected.
     bad_accept = client.post(
         "/api/v1/auth/accept-invitation",
-        json={"token": capture_invitation_email["token"], "username": "sneaky", "password": "Whatever123"},
+        json={"token": capture_invitation_email["token"], "username": "sneaky", "password": "Whatever123!"},
     )
     assert bad_accept.status_code == 400
 
@@ -431,7 +431,7 @@ def test_invite_existing_user_case_b_reuses_user_without_modifying_credentials(c
         db.close()
 
     # Original credentials still work.
-    original_token = _login(existing_username, password="OriginalPass1")
+    original_token = _login(existing_username, password="OriginalPass1!")
     assert original_token
 
 
@@ -459,7 +459,7 @@ def test_same_business_rehire_after_deactivation_rejected_explicitly(capture_inv
 
     invite = _invite(business_id, owner_token, email, "HR_USER")
     member_id = invite.json()["id"]
-    client.post("/api/v1/auth/accept-invitation", json={"token": capture_invitation_email["token"], "username": f"rehireuser_{unique}", "password": "Testpass123"})
+    client.post("/api/v1/auth/accept-invitation", json={"token": capture_invitation_email["token"], "username": f"rehireuser_{unique}", "password": "Testpass123!"})
 
     deactivate = client.post(f"/api/v1/business-members/{member_id}/deactivate", headers=_auth(owner_token))
     assert deactivate.status_code == 200, deactivate.text
@@ -484,7 +484,7 @@ def test_br022_cross_business_movement_after_deactivation(capture_invitation_ema
     member_a_id = invite_a.json()["id"]
     accept_a = client.post(
         "/api/v1/auth/accept-invitation",
-        json={"token": capture_invitation_email["token"], "username": username, "password": "Testpass123"},
+        json={"token": capture_invitation_email["token"], "username": username, "password": "Testpass123!"},
     )
     assert accept_a.status_code == 200, accept_a.text
 
@@ -512,7 +512,7 @@ def test_br022_cross_business_movement_after_deactivation(capture_invitation_ema
     assert accept_b.status_code == 200, accept_b.text
 
     # Original credentials from Business A still work, now resolving to Business B.
-    token = _login(username, password="Testpass123")
+    token = _login(username, password="Testpass123!")
     me = client.get("/api/v1/auth/me", headers=_auth(token)).json()
     assert me["business"]["id"] == business_b_id
     assert me["business"]["role_code"] == "HR_USER"
@@ -536,7 +536,7 @@ def test_administratively_deactivated_user_is_still_treated_as_case_b(capture_in
     unique = uuid.uuid4().hex[:8]
     email = f"adminlocked_{unique}@example.com"
     username = f"adminlocked_{unique}"
-    _register_plain_user(username=username, email=email, password="Testpass123")
+    _register_plain_user(username=username, email=email, password="Testpass123!")
 
     # Legacy admin path unrelated to invitations.
     admin_username = f"legacyadmin_{unique}"
@@ -631,7 +631,7 @@ def test_resend_only_works_while_pending(capture_invitation_email):
     member_id = invite.json()["id"]
     client.post(
         "/api/v1/auth/accept-invitation",
-        json={"token": capture_invitation_email["token"], "username": f"resendactive_{unique}", "password": "Testpass123"},
+        json={"token": capture_invitation_email["token"], "username": f"resendactive_{unique}", "password": "Testpass123!"},
     )
 
     resend = client.post(
@@ -656,7 +656,7 @@ def test_transfer_moves_active_branch_manager_preserving_history(capture_invitat
     member_id = invite.json()["id"]
     client.post(
         "/api/v1/auth/accept-invitation",
-        json={"token": capture_invitation_email["token"], "username": f"transferuser_{unique}", "password": "Testpass123"},
+        json={"token": capture_invitation_email["token"], "username": f"transferuser_{unique}", "password": "Testpass123!"},
     )
 
     transfer = client.post(
@@ -692,6 +692,61 @@ def test_transfer_moves_active_branch_manager_preserving_history(capture_invitat
         db.close()
 
 
+def test_hr_can_transfer_branch_manager_and_list_staff(capture_invitation_email):
+    """M9 Phase 6 (PRD §10.4 'Employee transfers'): HR gains transfer
+    authorization and the read access it depends on; invite/deactivate
+    remain Business Owner-only (unchanged, ID-006)."""
+    business_id, _, owner_token = _register_and_approve_business()
+    branch_1 = _create_and_approve_branch(business_id, owner_token, "Branch One")
+    branch_2 = _create_and_approve_branch(business_id, owner_token, "Branch Two")
+
+    unique = uuid.uuid4().hex[:8]
+
+    bm_invite = _invite(business_id, owner_token, f"hrxferbm_{unique}@example.com", "BRANCH_MANAGER", branch_1["id"])
+    bm_member_id = bm_invite.json()["id"]
+    bm_token_value = capture_invitation_email["token"]
+    client.post(
+        "/api/v1/auth/accept-invitation",
+        json={"token": bm_token_value, "username": f"hrxferbmuser_{unique}", "password": "Testpass123!"},
+    )
+
+    hr_invite = _invite(business_id, owner_token, f"hrxferhr_{unique}@example.com", "HR_USER")
+    hr_token_value = capture_invitation_email["token"]
+    client.post(
+        "/api/v1/auth/accept-invitation",
+        json={"token": hr_token_value, "username": f"hrxferhruser_{unique}", "password": "Testpass123!"},
+    )
+    hr_token = _login(f"hrxferhruser_{unique}")
+
+    # HR can now list staff (needed to use the transfer feature at all).
+    listing = client.get(f"/api/v1/businesses/{business_id}/staff", headers=_auth(hr_token))
+    assert listing.status_code == 200, listing.text
+
+    # HR can transfer the Branch Manager.
+    transfer = client.post(
+        f"/api/v1/business-members/{bm_member_id}/transfer-branch",
+        json={"branch_id": branch_2["id"]},
+        headers=_auth(hr_token),
+    )
+    assert transfer.status_code == 200, transfer.text
+    assert transfer.json()["current_branch_id"] == branch_2["id"]
+
+    # Invitation issuing remains Owner-only — HR is still rejected.
+    hr_invite_attempt = client.post(
+        f"/api/v1/businesses/{business_id}/staff/invite",
+        json={"email": f"hrxferblocked_{unique}@example.com", "role_code": "HR_USER"},
+        headers=_auth(hr_token),
+    )
+    assert hr_invite_attempt.status_code == 403
+
+    # Deactivation remains Owner-only — HR is still rejected.
+    hr_deactivate_attempt = client.post(
+        f"/api/v1/business-members/{bm_member_id}/deactivate",
+        headers=_auth(hr_token),
+    )
+    assert hr_deactivate_attempt.status_code == 403
+
+
 def test_transfer_rejected_for_pending_member_and_for_hr(capture_invitation_email):
     business_id, _, owner_token = _register_and_approve_business()
     branch_1 = _create_and_approve_branch(business_id, owner_token, "Branch One")
@@ -714,7 +769,7 @@ def test_transfer_rejected_for_pending_member_and_for_hr(capture_invitation_emai
     hr_id = hr_invite.json()["id"]
     client.post(
         "/api/v1/auth/accept-invitation",
-        json={"token": capture_invitation_email["token"], "username": f"hruser_{unique}", "password": "Testpass123"},
+        json={"token": capture_invitation_email["token"], "username": f"hruser_{unique}", "password": "Testpass123!"},
     )
     hr_transfer = client.post(
         f"/api/v1/business-members/{hr_id}/transfer-branch",

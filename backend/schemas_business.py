@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, ConfigDict
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 
 
@@ -11,8 +11,24 @@ class BusinessCategoryResponse(BaseModel):
     id: int
     name: str
     description: Optional[str] = None
+    is_active: bool
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class BusinessCategoryCreateRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class BusinessCategoryUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class CountryResponse(BaseModel):
@@ -47,6 +63,14 @@ class BusinessRejectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class BusinessUpdateRequest(BaseModel):
+    business_name: Optional[str] = None
+    business_category_id: Optional[int] = None
+    country_id: Optional[int] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class BusinessResponse(BaseModel):
     id: int
     business_name: str
@@ -59,3 +83,11 @@ class BusinessResponse(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class PaginatedBusinesses(BaseModel):
+    items: List[BusinessResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int

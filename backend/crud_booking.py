@@ -3,9 +3,11 @@ from datetime import datetime, date, time
 from decimal import Decimal
 from typing import List, Optional, Tuple
 
-from sqlalchemy import text
+from sqlalchemy import text, or_, desc
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
+
+from pagination import paginate
 
 from models import (
     User,
@@ -908,6 +910,9 @@ def list_bookings_for_branch(
     db: Session, branch_id: int, current_user: User,
     booking_date: Optional[date] = None, status: Optional[str] = None, resource_id: Optional[int] = None,
 ) -> List[Booking]:
+    """Operational booking list used by the staff Booking Management console
+    (unpaginated bare list — unchanged contract). See
+    `list_booking_history_for_branch` for the paginated Booking History view."""
     branch = get_branch_by_id(db, branch_id)
     _require_branch_booking_staff_access(db, branch, current_user)
 
@@ -921,18 +926,107 @@ def list_bookings_for_branch(
     return query.order_by(Booking.booking_date.desc(), Booking.start_time.desc()).all()
 
 
+def list_booking_history_for_branch(
+    db: Session, branch_id: int, current_user: User,
+    status: Optional[str] = None,
+    date_from: Optional[date] = None, date_to: Optional[date] = None,
+    page: int = 1, page_size: int = 20,
+) -> dict:
+    """Branch Manager's Booking History (M9 follow-up): date-range filter +
+    pagination, scoped to this one branch — separate from the operational
+    `list_bookings_for_branch` above so the existing Booking Management
+    console's contract is untouched."""
+    branch = get_branch_by_id(db, branch_id)
+    _require_branch_booking_staff_access(db, branch, current_user)
+
+    query = db.query(Booking).filter(Booking.branch_id == branch_id)
+    if status is not None:
+        query = query.filter(Booking.status == status)
+    if date_from is not None:
+        query = query.filter(Booking.booking_date >= date_from)
+    if date_to is not None:
+        query = query.filter(Booking.booking_date <= date_to)
+
+    total = query.count()
+    rows = (
+        query.order_by(Booking.booking_date.desc(), Booking.start_time.desc())
+        .limit(page_size).offset((page - 1) * page_size).all()
+    )
+    return paginate(rows, total, page, page_size)
+
+
 def list_bookings_for_business(
     db: Session, business_id: int, current_user: User,
     booking_date: Optional[date] = None, status: Optional[str] = None,
-) -> List[Booking]:
+    page: int = 1, page_size: int = 20,
+    search: Optional[str] = None,
+    resource_id: Optional[int] = None, customer_id: Optional[int] = None, branch_service_id: Optional[int] = None,
+    branch_id: Optional[int] = None, date_from: Optional[date] = None, date_to: Optional[date] = None,
+    sort: str = "-booking_date",
+) -> dict:
+    """Search/filter/sort/pagination per PRD §38-40. `branch_id`/`date_from`/
+    `date_to` added for the Business Owner's Booking History (M9 follow-up)."""
     _require_business_wide_booking_read_access(db, business_id, current_user)
+
+    if branch_id is not None:
+        branch = db.query(Branch).filter(Branch.id == branch_id, Branch.business_id == business_id).first()
+        if not branch:
+            raise HTTPException(status_code=400, detail="Branch does not belong to this business")
 
     query = db.query(Booking).filter(Booking.business_id == business_id)
     if booking_date is not None:
         query = query.filter(Booking.booking_date == booking_date)
+    if date_from is not None:
+        query = query.filter(Booking.booking_date >= date_from)
+    if date_to is not None:
+        query = query.filter(Booking.booking_date <= date_to)
     if status is not None:
         query = query.filter(Booking.status == status)
-    return query.order_by(Booking.booking_date.desc(), Booking.start_time.desc()).all()
+    if resource_id is not None:
+        query = query.filter(Booking.resource_id == resource_id)
+    if customer_id is not None:
+        query = query.filter(Booking.customer_id == customer_id)
+    if branch_service_id is not None:
+        query = query.filter(Booking.branch_service_id == branch_service_id)
+    if branch_id is not None:
+        query = query.filter(Booking.branch_id == branch_id)
+
+    if search:
+        conditions = []
+        if search.isdigit():
+            conditions.append(Booking.id == int(search))
+        like = f"%{search}%"
+        query = (
+            query
+            .outerjoin(BusinessCustomer, Booking.customer_id == BusinessCustomer.id)
+            .outerjoin(PlatformCustomer, BusinessCustomer.platform_customer_id == PlatformCustomer.id)
+            .outerjoin(User, PlatformCustomer.user_id == User.id)
+            .outerjoin(UserProfile, UserProfile.user_id == User.id)
+            .outerjoin(Resource, Booking.resource_id == Resource.id)
+        )
+        conditions.extend([
+            User.email.ilike(like),
+            UserProfile.first_name.ilike(like),
+            UserProfile.last_name.ilike(like),
+            Resource.resource_name.ilike(like),
+        ])
+        query = query.filter(or_(*conditions))
+
+    if search:
+        query = query.distinct()
+    total = query.count()
+
+    sort_field = sort[1:] if sort.startswith("-") else sort
+    sort_column = {
+        "booking_date": Booking.booking_date,
+        "start_time": Booking.start_time,
+        "created_at": Booking.created_at,
+    }.get(sort_field, Booking.booking_date)
+    query = query.order_by(desc(sort_column) if sort.startswith("-") else sort_column)
+
+    rows = query.limit(page_size).offset((page - 1) * page_size).all()
+
+    return paginate(rows, total, page, page_size)
 
 
 def get_booking_for_staff(db: Session, booking_id: int, current_user: User) -> Booking:
@@ -946,26 +1040,59 @@ def get_booking_for_staff(db: Session, booking_id: int, current_user: User) -> B
 # LISTING / DETAIL (customer, PRD §35)
 # -------------------------
 
-def list_bookings_for_customer(db: Session, current_user: User) -> List[Booking]:
+def list_bookings_for_customer(
+    db: Session, current_user: User,
+    date_from: Optional[date] = None, date_to: Optional[date] = None,
+    page: int = 1, page_size: int = 20,
+) -> dict:
+    """Customer Booking History (M9 follow-up): date-range filter + pagination."""
     platform_customer = crud_customer._require_customer_self(db, current_user)
     business_customer_ids = [
         bc.id
         for bc in db.query(BusinessCustomer).filter(BusinessCustomer.platform_customer_id == platform_customer.id).all()
     ]
     if not business_customer_ids:
-        return []
-    return (
-        db.query(Booking)
-        .filter(Booking.customer_id.in_(business_customer_ids))
-        .order_by(Booking.booking_date.desc(), Booking.start_time.desc())
-        .all()
+        return paginate([], 0, page, page_size)
+
+    query = db.query(Booking).filter(Booking.customer_id.in_(business_customer_ids))
+    if date_from is not None:
+        query = query.filter(Booking.booking_date >= date_from)
+    if date_to is not None:
+        query = query.filter(Booking.booking_date <= date_to)
+
+    total = query.count()
+    rows = (
+        query.order_by(Booking.booking_date.desc(), Booking.start_time.desc())
+        .limit(page_size).offset((page - 1) * page_size).all()
     )
+    return paginate(rows, total, page, page_size)
 
 
 def get_booking_for_customer(db: Session, booking_id: int, current_user: User) -> Booking:
     booking = get_booking_or_404(db, booking_id)
     _require_owning_customer(db, booking, current_user)
     return booking
+
+
+# -------------------------
+# LISTING (Resource User, M9 Phase 6 — PRD §35 Resource Dashboard,
+# §10.5 "View assigned bookings" only; status updates and availability
+# management are both explicitly Future-tagged and not built here)
+# -------------------------
+
+def list_bookings_for_resource_user(db: Session, current_user: User, scope: str = "upcoming") -> List[Booking]:
+    resource = db.query(Resource).filter(Resource.linked_user_id == current_user.id).first()
+    if not resource:
+        raise HTTPException(status_code=403, detail="No Resource is linked to this account")
+
+    query = db.query(Booking).filter(Booking.resource_id == resource.id, Booking.status != "Cancelled")
+    today = date.today()
+    if scope == "today":
+        query = query.filter(Booking.booking_date == today)
+    else:
+        query = query.filter(Booking.booking_date >= today)
+
+    return query.order_by(Booking.booking_date.asc(), Booking.start_time.asc()).all()
 
 
 # -------------------------
@@ -1072,6 +1199,7 @@ def get_booking_notification_context(db: Session, booking: Booking) -> dict:
     )
 
     return {
+        "user_id": user.id,
         "email": user.email,
         "business_name": business.business_name if business else None,
         "branch_name": branch.branch_name if branch else None,

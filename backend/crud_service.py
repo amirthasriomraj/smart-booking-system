@@ -21,6 +21,7 @@ from models import (
     ServiceApproval,
 )
 from audit import write_audit
+from pagination import paginate
 
 
 def _jsonable(value):
@@ -398,14 +399,32 @@ def list_branch_services_for_branch(db: Session, branch_id: int, current_user: U
     )
 
 
-def list_branch_services_for_business(db: Session, business_id: int, current_user: User) -> List[BranchService]:
+def list_branch_services_for_business(
+    db: Session,
+    business_id: int,
+    current_user: User,
+    page: int = 1,
+    page_size: int = 20,
+    search: Optional[str] = None,
+) -> dict:
+    """Search/pagination per PRD §38-40 (search by Service Template name)."""
     _require_business_wide_branch_service_read_access(db, business_id, current_user)
-    return (
-        db.query(BranchService)
-        .filter(BranchService.business_id == business_id)
-        .order_by(BranchService.created_at.desc())
+
+    query = db.query(BranchService).filter(BranchService.business_id == business_id)
+    if search:
+        query = query.join(ServiceTemplate, BranchService.service_template_id == ServiceTemplate.id).filter(
+            ServiceTemplate.name.ilike(f"%{search}%")
+        )
+
+    total = query.count()
+    rows = (
+        query.order_by(BranchService.created_at.desc())
+        .limit(page_size)
+        .offset((page - 1) * page_size)
         .all()
     )
+
+    return paginate(rows, total, page, page_size)
 
 
 def get_branch_service(db: Session, branch_service_id: int, current_user: User) -> BranchService:
@@ -487,10 +506,10 @@ def update_branch_service_direct(db: Session, branch_service_id: int, payload, c
 
 def submit_branch_service_override(
     db: Session, branch_service_id: int, payload, current_user: User
-) -> Tuple[ServiceApproval, str, str, str, str]:
+) -> Tuple[ServiceApproval, User, str, str, str, int]:
     """
     Branch Manager submits an override proposal. Returns
-    (approval, business_owner_email, business_name, branch_name, service_name)
+    (approval, business_owner_user, business_name, branch_name, service_name)
     so the router can schedule the submission-notification email.
     """
     branch_service = get_branch_service_or_404(db, branch_service_id)
@@ -551,15 +570,15 @@ def submit_branch_service_override(
     owner_user = db.query(User).filter(User.id == owner_member.user_id).first()
     template = get_service_template_or_404(db, branch_service.service_template_id)
 
-    return approval, owner_user.email, business.business_name, branch.branch_name, template.name
+    return approval, owner_user, business.business_name, branch.branch_name, template.name, business.id
 
 
 def decide_service_approval(
     db: Session, approval_id: int, payload, current_user: User
-) -> Tuple[ServiceApproval, str, str, str, str]:
+) -> Tuple[ServiceApproval, User, str, str, str, int]:
     """
     Business Owner approves or rejects a pending override. Returns
-    (approval, submitter_email, business_name, branch_name, service_name)
+    (approval, submitter_user, business_name, branch_name, service_name)
     so the router can schedule the decision-notification email.
     """
     approval = _get_service_approval_or_404(db, approval_id)
@@ -608,7 +627,7 @@ def decide_service_approval(
     submitter = db.query(User).filter(User.id == approval.requested_by).first()
     template = get_service_template_or_404(db, branch_service.service_template_id)
 
-    return approval, submitter.email, business.business_name, branch.branch_name, template.name
+    return approval, submitter, business.business_name, branch.branch_name, template.name, business.id
 
 
 def serialize_service_approval(db: Session, approval: ServiceApproval) -> dict:

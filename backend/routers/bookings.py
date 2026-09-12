@@ -14,6 +14,7 @@ from schemas_booking import (
     BookingCancelRequest,
     BookingReassignResourceRequest,
     BookingResponse,
+    PaginatedBookings,
     BookingHistoryEntryResponse,
 )
 from schemas_payment import (
@@ -46,12 +47,16 @@ def get_db():
         db.close()
 
 
-def _notify(background_tasks: BackgroundTasks, send_fn, db: Session, booking) -> None:
+def _notify(background_tasks: BackgroundTasks, send_fn, db: Session, booking, notification_type: str) -> None:
     context = crud_booking.get_booking_notification_context(db, booking)
     background_tasks.add_task(
-        send_fn,
-        context["email"], context["business_name"], context["branch_name"], context["service_name"],
-        context["booking_date"], context["start_time"],
+        notification_service.log_and_send,
+        context["user_id"], notification_type,
+        lambda: send_fn(
+            context["email"], context["business_name"], context["branch_name"], context["service_name"],
+            context["booking_date"], context["start_time"],
+        ),
+        booking.business_id, "Booking", booking.id,
     )
 
 
@@ -125,7 +130,7 @@ def create_staff_booking(
     db: Session = Depends(get_db),
 ):
     booking = crud_booking.create_staff_booking(db, branch_id, payload, current_user)
-    _notify(background_tasks, send_booking_confirmation_email, db, booking)
+    _notify(background_tasks, send_booking_confirmation_email, db, booking, "BookingConfirmation")
     return crud_booking.serialize_booking(db, booking)
 
 
@@ -142,16 +147,49 @@ def list_branch_bookings(
     return [crud_booking.serialize_booking(db, b) for b in bookings]
 
 
-@router.get("/businesses/{business_id}/bookings", response_model=List[BookingResponse])
+@router.get("/businesses/{business_id}/bookings", response_model=PaginatedBookings)
 def list_business_bookings(
     business_id: int,
     booking_date: Optional[DateType] = None,
     status: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    search: Optional[str] = None,
+    resource_id: Optional[int] = None,
+    customer_id: Optional[int] = None,
+    branch_service_id: Optional[int] = None,
+    branch_id: Optional[int] = None,
+    date_from: Optional[DateType] = None,
+    date_to: Optional[DateType] = None,
+    sort: str = "-booking_date",
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    bookings = crud_booking.list_bookings_for_business(db, business_id, current_user, booking_date, status)
-    return [crud_booking.serialize_booking(db, b) for b in bookings]
+    result = crud_booking.list_bookings_for_business(
+        db, business_id, current_user, booking_date, status,
+        page, page_size, search, resource_id, customer_id, branch_service_id,
+        branch_id, date_from, date_to, sort,
+    )
+    result["items"] = [crud_booking.serialize_booking(db, b) for b in result["items"]]
+    return result
+
+
+@router.get("/branches/{branch_id}/booking-history", response_model=PaginatedBookings)
+def list_branch_booking_history(
+    branch_id: int,
+    status: Optional[str] = None,
+    date_from: Optional[DateType] = None,
+    date_to: Optional[DateType] = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Branch Manager's Booking History (M9 follow-up) — separate from the
+    operational /branches/{id}/bookings list used by Booking Management."""
+    result = crud_booking.list_booking_history_for_branch(db, branch_id, current_user, status, date_from, date_to, page, page_size)
+    result["items"] = [crud_booking.serialize_booking(db, b) for b in result["items"]]
+    return result
 
 
 @router.get("/bookings/{booking_id}", response_model=BookingResponse)
@@ -207,7 +245,7 @@ def reschedule_staff_booking(
 ):
     result = crud_payment.reschedule_staff_booking(db, booking_id, payload, current_user)
     booking = crud_booking.get_booking_or_404(db, booking_id)
-    _notify(background_tasks, send_booking_rescheduled_email, db, booking)
+    _notify(background_tasks, send_booking_rescheduled_email, db, booking, "BookingRescheduled")
     _notify_price_adjustment(background_tasks, db, booking, result.get("price_adjustment"))
     return _flatten_action_result(result)
 
@@ -236,7 +274,7 @@ def cancel_staff_booking(
 ):
     result = crud_payment.staff_cancel_booking_with_refund(db, booking_id, payload, current_user)
     booking = crud_booking.get_booking_or_404(db, booking_id)
-    _notify(background_tasks, send_booking_cancelled_email, db, booking)
+    _notify(background_tasks, send_booking_cancelled_email, db, booking, "BookingCancelled")
     _notify_refund_outcome(background_tasks, db, booking, result.get("refund"))
     return _flatten_action_result(result)
 
@@ -276,7 +314,7 @@ def complete_booking(
     db: Session = Depends(get_db),
 ):
     booking = crud_booking.complete_booking(db, booking_id, current_user)
-    _notify(background_tasks, send_booking_completed_email, db, booking)
+    _notify(background_tasks, send_booking_completed_email, db, booking, "BookingCompleted")
     return crud_booking.serialize_booking(db, booking)
 
 
@@ -304,16 +342,35 @@ def create_customer_booking(
     db: Session = Depends(get_db),
 ):
     booking = crud_booking.create_customer_booking(db, payload, current_user)
-    _notify(background_tasks, send_booking_confirmation_email, db, booking)
+    _notify(background_tasks, send_booking_confirmation_email, db, booking, "BookingConfirmation")
     return crud_booking.serialize_booking(db, booking)
 
 
-@router.get("/customer/bookings", response_model=List[BookingResponse])
+@router.get("/customer/bookings", response_model=PaginatedBookings)
 def list_customer_bookings(
+    date_from: Optional[DateType] = None,
+    date_to: Optional[DateType] = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    bookings = crud_booking.list_bookings_for_customer(db, current_user)
+    result = crud_booking.list_bookings_for_customer(db, current_user, date_from, date_to, page, page_size)
+    result["items"] = [crud_booking.serialize_booking(db, b) for b in result["items"]]
+    return result
+
+
+# -----------------------------
+# Resource User self-service (M9 Phase 6, PRD §35 Resource Dashboard)
+# -----------------------------
+
+@router.get("/resource/bookings", response_model=List[BookingResponse])
+def list_resource_user_bookings(
+    scope: str = "upcoming",
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    bookings = crud_booking.list_bookings_for_resource_user(db, current_user, scope)
     return [crud_booking.serialize_booking(db, b) for b in bookings]
 
 
@@ -347,7 +404,7 @@ def reschedule_customer_booking(
 ):
     result = crud_payment.reschedule_customer_booking(db, booking_id, payload, current_user)
     booking = crud_booking.get_booking_or_404(db, booking_id)
-    _notify(background_tasks, send_booking_rescheduled_email, db, booking)
+    _notify(background_tasks, send_booking_rescheduled_email, db, booking, "BookingRescheduled")
     _notify_price_adjustment(background_tasks, db, booking, result.get("price_adjustment"))
     return _flatten_action_result(result)
 
@@ -362,6 +419,6 @@ def cancel_customer_booking(
 ):
     result = crud_payment.cancel_customer_booking_with_refund(db, booking_id, payload, current_user)
     booking = crud_booking.get_booking_or_404(db, booking_id)
-    _notify(background_tasks, send_booking_cancelled_email, db, booking)
+    _notify(background_tasks, send_booking_cancelled_email, db, booking, "BookingCancelled")
     _notify_refund_outcome(background_tasks, db, booking, result.get("refund"))
     return _flatten_action_result(result)

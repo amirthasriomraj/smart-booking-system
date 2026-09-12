@@ -74,14 +74,19 @@ export default function ResourceManagement() {
     listResourceCategories(businessId).then((r) => setCategories(r.data)).catch(() => {})
     if (isOwner) {
       listBranchesForBusiness(businessId)
-        .then((r) => setBranches(r.data.filter((b) => b.approval_status === "Approved")))
+        .then((r) => setBranches(r.data.items.filter((b) => b.approval_status === "Approved")))
         .catch(() => {})
     }
   }, [businessId, isOwner])
 
   const loadResources = useCallback(() => {
+    // listResourcesForBusiness returns a paginated {items, total, ...}
+    // envelope (M9 Phase 5); listResourcesForBranch still returns a plain
+    // array (unpaginated, out of Phase 5 scope) — normalize both here.
     if (isHr) {
-      listResourcesForBusiness(businessId).then((r) => setResources(r.data)).catch(() => setError("Failed to load resources"))
+      listResourcesForBusiness(businessId)
+        .then((r) => setResources(r.data.items))
+        .catch(() => setError("Failed to load resources"))
       return
     }
     if (!effectiveBranchId) {

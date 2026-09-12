@@ -21,6 +21,7 @@ from models import (
 )
 from audit import write_audit
 from auth import hash_password, validate_password
+from pagination import paginate
 
 # Milestone 6 (ID-030): mechanical placeholder identity for a staff-created
 # walk-in customer with no existing platform identity, mirroring ID-005's
@@ -427,10 +428,11 @@ def list_business_customers(
     db: Session,
     business_id: int,
     current_user: User,
-    limit: int,
-    offset: int,
+    page: int,
+    page_size: int,
     sort: str,
     search: Optional[str],
+    status: Optional[str] = None,
 ) -> dict:
     business = _require_customer_access(db, business_id, current_user)
 
@@ -441,6 +443,9 @@ def list_business_customers(
         .outerjoin(UserProfile, UserProfile.user_id == User.id)
         .filter(BusinessCustomer.business_id == business.id)
     )
+
+    if status is not None:
+        query = query.filter(BusinessCustomer.status == status)
 
     if search:
         like = f"%{search}%"
@@ -464,14 +469,9 @@ def list_business_customers(
     }.get(sort_field, BusinessCustomer.created_at)
     query = query.order_by(desc(sort_column) if sort.startswith("-") else sort_column)
 
-    rows = query.limit(limit).offset(offset).all()
+    rows = query.limit(page_size).offset((page - 1) * page_size).all()
 
-    return {
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-        "data": [serialize_business_customer(db, bc) for bc in rows],
-    }
+    return paginate([serialize_business_customer(db, bc) for bc in rows], total, page, page_size)
 
 
 def get_business_customer(db: Session, business_customer_id: int, current_user: User) -> BusinessCustomer:
